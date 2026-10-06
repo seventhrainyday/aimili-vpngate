@@ -2833,13 +2833,25 @@ def run_diagnostics() -> dict[str, Any]:
     except Exception as e:
         add("代理端口", False, f"连接失败: {e}")
 
-    # 4. 出口 IP（通过代理）
-    try:
+    # 构建带认证的代理 opener
+    def _proxy_opener():
         import urllib.request
-        port = int(load_ui_config().get("proxy_port", 7928))
-        proxy = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}", "https": f"http://127.0.0.1:{port}"})
+        ui_cfg = load_ui_config()
+        port = int(ui_cfg.get("proxy_port", 7928))
+        user = ui_cfg.get("proxy_user", "") or ""
+        pwd = ui_cfg.get("proxy_password", "") or ""
+        if user:
+            proxy_url = f"http://{urllib.parse.quote(user)}:{urllib.parse.quote(pwd)}@127.0.0.1:{port}"
+        else:
+            proxy_url = f"http://127.0.0.1:{port}"
+        proxy = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
         opener = urllib.request.build_opener(proxy)
         opener.addheaders = [("User-Agent", "Mozilla/5.0")]
+        return opener
+
+    # 4. 出口 IP（通过代理）
+    try:
+        opener = _proxy_opener()
         with opener.open("http://ip-api.com/json/?fields=status,country,query,isp", timeout=10) as resp:
             data = json.loads(resp.read().decode())
         if data.get("status") == "success":
@@ -2851,11 +2863,7 @@ def run_diagnostics() -> dict[str, Any]:
 
     # 5. DNS 泄漏检查（通过代理查 DNS，看用的是哪个 DNS）
     try:
-        import urllib.request
-        port = int(load_ui_config().get("proxy_port", 7928))
-        # 用代理访问一个返回 DNS 信息的接口
-        proxy = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
-        opener = urllib.request.build_opener(proxy)
+        opener = _proxy_opener()
         with opener.open("http://ip-api.com/json/?fields=dns", timeout=10) as resp:
             data = json.loads(resp.read().decode())
         dns_info = data.get("dns", {})
