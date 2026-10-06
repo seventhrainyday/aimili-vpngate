@@ -5778,7 +5778,6 @@ INDEX_HTML = r"""<!doctype html>
               <span style="font-size: 12px; color: var(--text-secondary);">Mbps（低于此值自动切换）</span>
             </div>
           </div>
-          </div>
         </div>
         
         <div style="display: flex; gap: 12px; justify-content: flex-end;">
