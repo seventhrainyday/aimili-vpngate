@@ -4898,8 +4898,8 @@ const ipScore = n => {
 // 三个 IP 检测站的外链模板
 const IP_CHECK_SITES = [
   {name: "Lark", title: "去 iplark.com 查此 IP", url: ip => `https://iplark.com/${encodeURIComponent(ip)}`},
-  {name: "Pure", title: "去 ippure.com 查此 IP", url: ip => `https://ippure.com/${encodeURIComponent(ip)}`},
-  {name: "Super", title: "去 ipsuper.com 查此 IP", url: ip => `https://ipsuper.com/${encodeURIComponent(ip)}`},
+  {name: "Pure", title: "去 ippure.com 查此 IP", url: ip => `https://ippure.com/?ip=${encodeURIComponent(ip)}`},
+  {name: "Super", title: "去 ipsuper.com 查此 IP", url: ip => `https://ipsuper.com/?ip=${encodeURIComponent(ip)}`},
 ];
 
 const translateCountry = c => {
