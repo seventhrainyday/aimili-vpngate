@@ -846,7 +846,7 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertIn("检测更新", manager.INDEX_HTML)
         self.assertIn("/api/check_update", manager.INDEX_HTML)
         # Fork 修改：更新通道指向本 fork 的修复分支
-        self.assertIn("/tree/probe-and-accumulate-fix", manager.INDEX_HTML)
+        self.assertIn("/tree/enhanced", manager.INDEX_HTML)
         self.assertNotIn("/tree/bate", manager.INDEX_HTML)
         self.assertNotIn(">测试版<", manager.INDEX_HTML)
         self.assertIn('id="deployment_mode_label"', manager.INDEX_HTML)
@@ -855,7 +855,7 @@ class ManagerLogicTests(unittest.TestCase):
         install_text = (manager.ROOT_DIR / "install.sh").read_text(encoding="utf-8")
 
         # Fork 修改：默认部署本 fork 的修复分支，ml update 跟随当前分支
-        self.assertIn('DEPLOY_BRANCH="${3:-probe-and-accumulate-fix}"', install_text)
+        self.assertIn('DEPLOY_BRANCH="${3:-enhanced}"', install_text)
         self.assertIn('--abbrev-ref", "HEAD"', install_text)
         self.assertNotIn("origin/master", install_text)
         self.assertNotIn("bate", install_text.lower())

@@ -82,7 +82,7 @@ fi
 
 # 4. Clone or pull the repository
 INSTALL_DIR="/opt/aimilivpn"
-DEPLOY_BRANCH="${3:-probe-and-accumulate-fix}"
+DEPLOY_BRANCH="${3:-enhanced}"
 
 echo -e "\n${YELLOW}[2/4] 正在从 GitHub 部署源代码到 ${INSTALL_DIR} (目标分支: ${DEPLOY_BRANCH})...${PLAIN}"
 if [ -f "${INSTALL_DIR}/.local_dev" ]; then

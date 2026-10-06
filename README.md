@@ -10,7 +10,7 @@
 
 **简体中文** · [English](docs/README.en.md) · [日本語](docs/README.ja.md) · [한국어](docs/README.ko.md)
 
-[快速安装](#quick-install) · [完整安装](#installation) · [连接使用](#connection) · [服务商推荐](#vps) · [社区入口](#community) · [法律声明](#legal)
+[快速安装](#quick-install) · [完整安装](#installation) · [连接使用](#connection) · [社区入口](#community) · [法律声明](#legal)
 
 > **Fork 说明**：本分支基于上游 `OpenMili/aimili-vpngate` 修改，包含以下修复与新增功能（上游未合并）：
 >
@@ -105,17 +105,6 @@
 
 </div>
 
-<a id="vps"></a>
-
-## 服务商推荐
-
-| 商家 | 推荐理由 | 入口 |
-| --- | --- | --- |
-| **Bandwagon** |代理 & 建站推荐：CN2/9929/CMI三网直连 2500 Mbps 高速线路；低延迟、高稳定性，适合直播、带货和长期出海业务。 | [立即查看](https://bandwagonhost.com/aff.php?aff=81790) |
-| **RackNerd** | 综合服务器推荐：4000GB 大流量，价格与配置性价比突出；部署成本低，适合需要长期稳定运行的服务。 | [立即查看](https://my.racknerd.com/aff.php?aff=18708) |
-| **OpenMili** | OpenMili Ai 中转站推荐：GPT-6 Astra & Images 2.0 Pro 美区原价 0.12倍率 不掺假、不降智，接受任何压力测试！| [立即查看](https://openmili.com/) |
-| **JTTI VPS** | 稳定建站服务器推荐：5 Mbps 独享带宽 无限流量 CN2/9929/CMI三网直连，跨境网站访问低延迟，长期稳定API运营。| [立即查看](https://www.jtti.cc/zh/activity/y2026-national-day.html?k=baoweise) |
-
 AimiliVPN 使用 Python 标准库管理 VPNGate 节点，提供节点获取与检测、连接切换、Web 管理后台，以及共用一个端口的 HTTP、HTTPS 网站代理和 SOCKS5 代理服务。
 
 | 项目 | 默认值或支持范围 |
@@ -135,7 +124,7 @@ AimiliVPN 使用 Python 标准库管理 VPNGate 节点，提供节点获取与�
 使用 `root` 用户在受支持的 Linux VPS 上执行：
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/seventhrainyday/aimili-vpngate/probe-and-accumulate-fix/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/seventhrainyday/aimili-vpngate/enhanced/install.sh)
 ```
 
 安装完成后，终端会显示 Web 后台完整地址、随机安全路径、登录账号和密码。输入 `ml` 可打开管理菜单。
@@ -143,7 +132,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/seventhrainyday/aimili-vpngate
 无人值守安装可显式跳过首次参数询问，并自动生成安全路径和登录凭据：
 
 ```bash
-AIMILIVPN_NONINTERACTIVE=1 bash <(curl -Ls https://raw.githubusercontent.com/seventhrainyday/aimili-vpngate/probe-and-accumulate-fix/install.sh)
+AIMILIVPN_NONINTERACTIVE=1 bash <(curl -Ls https://raw.githubusercontent.com/seventhrainyday/aimili-vpngate/enhanced/install.sh)
 ```
 
 > [!TIP]
@@ -161,7 +150,7 @@ AIMILIVPN_NONINTERACTIVE=1 bash <(curl -Ls https://raw.githubusercontent.com/sev
 ### 方式一：一键源码安装
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/seventhrainyday/aimili-vpngate/probe-and-accumulate-fix/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/seventhrainyday/aimili-vpngate/enhanced/install.sh)
 ```
 
 安装器会部署到 `/opt/aimilivpn` 并注册系统服务。常用命令：
@@ -179,7 +168,7 @@ ml uninstall       # 卸载
 需要先审查脚本时：
 
 ```bash
-git clone --branch probe-and-accumulate-fix --single-branch https://github.com/seventhrainyday/aimili-vpngate.git
+git clone --branch enhanced --single-branch https://github.com/seventhrainyday/aimili-vpngate.git
 cd aimili-vpngate
 sudo bash install.sh
 ```
@@ -191,7 +180,7 @@ sudo bash install.sh
 Docker 主机需要 `/dev/net/tun`、host 网络以及 `NET_ADMIN`、`NET_RAW` 权限。
 
 ```bash
-git clone --branch probe-and-accumulate-fix --single-branch https://github.com/seventhrainyday/aimili-vpngate.git
+git clone --branch enhanced --single-branch https://github.com/seventhrainyday/aimili-vpngate.git
 cd aimili-vpngate
 docker compose pull
 docker compose up -d
@@ -232,7 +221,7 @@ docker run -d \
 <summary><strong>无法拉取 GHCR 时在 VPS 本地构建</strong></summary>
 
 ```bash
-git clone --branch probe-and-accumulate-fix --single-branch https://github.com/seventhrainyday/aimili-vpngate.git
+git clone --branch enhanced --single-branch https://github.com/seventhrainyday/aimili-vpngate.git
 cd aimili-vpngate
 docker compose build
 docker compose up -d
