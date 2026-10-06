@@ -9029,6 +9029,27 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
+        elif effective_path == "/api/blacklist":
+            # GET: 列出黑名单
+            try:
+                bl = load_blacklist()
+                nodes = read_nodes()
+                node_map = {str(n.get("id")): n for n in nodes}
+                out = []
+                for nid, entry in bl.items():
+                    n = node_map.get(nid, {})
+                    out.append({
+                        "id": nid,
+                        "name": n.get("name", nid),
+                        "country": n.get("country", ""),
+                        "until": entry.get("until", 0),
+                        "manual": bool(entry.get("manual")),
+                        "reason": entry.get("reason", ""),
+                    })
+                self.send_json({"ok": True, "blacklist": out})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
         elif effective_path == "/api/conn_history":
             try:
                 history = read_json(CONN_HISTORY_FILE, [])
@@ -9218,38 +9239,19 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         elif effective_path == "/api/blacklist":
-            # GET: 列出黑名单；POST {"id": "..."}: 手动拉黑
+            # POST {"id": "..."}: 手动拉黑
             try:
-                if self.command == "GET":
-                    bl = load_blacklist()
-                    nodes = read_nodes()
-                    node_map = {str(n.get("id")): n for n in nodes}
-                    out = []
-                    for nid, entry in bl.items():
-                        n = node_map.get(nid, {})
-                        out.append({
-                            "id": nid,
-                            "name": n.get("name", nid),
-                            "country": n.get("country", ""),
-                            "until": entry.get("until", 0),
-                            "manual": bool(entry.get("manual")),
-                            "reason": entry.get("reason", ""),
-                        })
-                    self.send_json({"ok": True, "blacklist": out})
-                elif self.command == "POST":
-                    payload = self.read_json_body() or {}
-                    nid = str(payload.get("id") or "").strip()
-                    if not nid:
-                        self.send_json({"ok": False, "error": "缺少节点 ID"}, HTTPStatus.BAD_REQUEST)
-                        return
-                    bl = load_blacklist()
-                    # 手动拉黑：30天有效期
-                    bl[nid] = {"until": time.time() + 30*24*3600, "manual": True, "reason": "手动拉黑"}
-                    with lock:
-                        write_json(BLACKLIST_FILE, bl)
-                    self.send_json({"ok": True, "message": "已加入黑名单"})
-                else:
-                    self.send_json({"ok": False, "error": "Method not allowed"}, HTTPStatus.METHOD_NOT_ALLOWED)
+                payload = self.read_json_body() or {}
+                nid = str(payload.get("id") or "").strip()
+                if not nid:
+                    self.send_json({"ok": False, "error": "缺少节点 ID"}, HTTPStatus.BAD_REQUEST)
+                    return
+                bl = load_blacklist()
+                # 手动拉黑：30天有效期
+                bl[nid] = {"until": time.time() + 30*24*3600, "manual": True, "reason": "手动拉黑"}
+                with lock:
+                    write_json(BLACKLIST_FILE, bl)
+                self.send_json({"ok": True, "message": "已加入黑名单"})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
