@@ -5523,12 +5523,7 @@ function renderNodeCards(list, activeNodeRef) {
   // activeNode 是 render() 的局部变量，这里自己找，避免 ReferenceError
   const active = activeNodeRef || (Array.isArray(nodes) ? nodes.find(n => n && n.active) : null);
   if (!list || list.length === 0) {
-    const totalNodes = Array.isArray(nodes) ? nodes.length : "n/a";
-    const vm = typeof nodeViewMode !== "undefined" ? nodeViewMode : "undef";
-    grid.innerHTML = `<div style="grid-column: 1/-1; text-align:center; color: var(--text-secondary); padding: 40px 0;">
-      未找到符合过滤条件的备选节点。
-      <div style="font-size:11px; opacity:0.6; margin-top:8px;">[调试] 传入:${list ? list.length : "null"} / 总节点:${totalNodes} / 视图:${vm} / 页:${typeof currentPage !== "undefined" ? currentPage : "?"}</div>
-    </div>`;
+    grid.innerHTML = `<div style="grid-column: 1/-1; text-align:center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</div>`;
     return;
   }
   grid.innerHTML = list.map(n => {
