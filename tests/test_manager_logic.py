@@ -1118,7 +1118,7 @@ class ProxyServerConcurrencyTests(unittest.TestCase):
             mock.patch.object(
                 proxy_server,
                 "proxy_client",
-                side_effect=lambda client, address: seen.append((client.name, address[0])),
+                side_effect=lambda client, address, device="tun0": seen.append((client.name, address[0])),
             ),
             mock.patch.object(proxy_server, "proxy_connection_sem", semaphore),
         ):

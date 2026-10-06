@@ -179,6 +179,8 @@ active_connection_cancel_event: threading.Event | None = None
 connection_epoch = 0
 active_openvpn_node_id = ""
 is_connecting = False
+# 多出口：exit_id -> {"process": Popen, "node_id": str, "port": int, "tun": str, "proxy_thread": Thread, "connected_at": float}
+extra_exit_processes: dict[str, dict[str, Any]] = {}
 last_active_ping_time = 0.0
 last_active_latency = 0
 consecutive_proxy_failures = 0
@@ -538,6 +540,10 @@ def get_state() -> dict[str, Any]:
     state["proxy_bind_host"] = ui_cfg.get("proxy_bind_host", "0.0.0.0")
     state["proxy_user"] = ui_cfg.get("proxy_user", "")
     state["proxy_auth_enabled"] = bool(ui_cfg.get("proxy_user") and ui_cfg.get("proxy_password"))
+    try:
+        state["extra_exits"] = get_extra_exit_status()
+    except Exception:
+        state["extra_exits"] = []
     state["check_interval_minutes"] = ui_cfg.get("check_interval_minutes", 21)
     state["probe_workers"] = ui_cfg.get("probe_workers", 10)
     state["routing_mode"] = ui_cfg.get("routing_mode", "auto")
@@ -2242,6 +2248,172 @@ def recover_after_manual_connect_failure(previous_node_id: str) -> None:
     ui_cfg = load_ui_config()
     if ui_cfg.get("connection_enabled", True) and ui_cfg.get("routing_mode") != "fixed_ip":
         auto_switch_node()
+
+# ============================================================
+# 多出口管理：每个额外出口 = 独立 OpenVPN(tunX) + 独立代理端口
+# ============================================================
+
+def get_extra_exits_config() -> list[dict[str, Any]]:
+    """从配置读取额外出口列表"""
+    ui_cfg = load_ui_config()
+    exits = ui_cfg.get("extra_exits", [])
+    return exits if isinstance(exits, list) else []
+
+def save_extra_exits_config(exits: list[dict[str, Any]]) -> None:
+    ui_cfg = load_ui_config()
+    ui_cfg["extra_exits"] = exits
+    auth_file = DATA_DIR / "ui_auth.json"
+    with lock:
+        DATA_DIR.mkdir(exist_ok=True, parents=True)
+        write_json(auth_file, ui_cfg)
+
+def get_extra_exit_status() -> list[dict[str, Any]]:
+    """返回所有额外出口的状态（供 API/UI）"""
+    exits = get_extra_exits_config()
+    result = []
+    nodes = read_nodes()
+    node_map = {n.get("id"): n for n in nodes}
+    for ex in exits:
+        eid = ex.get("id", "")
+        runtime = extra_exit_processes.get(eid, {})
+        proc = runtime.get("process")
+        running = proc is not None and proc.poll() is None
+        node = node_map.get(ex.get("node_id"), {})
+        result.append({
+            "id": eid,
+            "node_id": ex.get("node_id", ""),
+            "node_name": node.get("name", ex.get("node_id", "")),
+            "country": node.get("country", ""),
+            "port": ex.get("port", 0),
+            "tun": ex.get("tun", ""),
+            "enabled": ex.get("enabled", True),
+            "running": running,
+            "connected_at": runtime.get("connected_at", 0),
+        })
+    return result
+
+def _alloc_exit_tun(exits: list[dict[str, Any]]) -> str:
+    """分配未使用的 tun 设备（从 tun10 开始，避开测试用的 tun2-tun99）"""
+    used = {ex.get("tun") for ex in exits}
+    used.update(extra_exit_processes.get(eid, {}).get("tun", "") for eid in extra_exit_processes)
+    for i in range(10, 200):
+        tun = f"tun{i}"
+        if tun not in used and tun != "tun0":
+            return tun
+    raise RuntimeError("无可用的 tun 设备")
+
+def _alloc_exit_port(exits: list[dict[str, Any]], base_port: int = 7928) -> int:
+    """分配未使用的代理端口（从 base_port+1 开始）"""
+    used = {ex.get("port") for ex in exits}
+    used.add(base_port)
+    port = base_port + 1
+    while port in used:
+        port += 1
+        if port > 7999:
+            raise RuntimeError("无可用的代理端口")
+    return port
+
+def start_extra_exit(exit_id: str) -> str:
+    """启动一个额外出口：OpenVPN(tunX) + 代理端口"""
+    global extra_exit_processes
+    exits = get_extra_exits_config()
+    ex = next((e for e in exits if e.get("id") == exit_id), None)
+    if not ex:
+        raise ValueError(f"出口不存在: {exit_id}")
+    if exit_id in extra_exit_processes and extra_exit_processes[exit_id].get("process", {}).poll() is None:
+        return "已在运行"
+
+    node_id = ex.get("node_id", "")
+    nodes = read_nodes()
+    node = next((n for n in nodes if n.get("id") == node_id), None)
+    if not node:
+        raise ValueError(f"节点不存在: {node_id}")
+
+    tun_dev = ex.get("tun", "")
+    port = int(ex.get("port", 0))
+    if not tun_dev or not port:
+        raise ValueError("出口配置不完整（缺少 tun 或端口）")
+
+    # 写入 OpenVPN 配置
+    config_path = CONFIG_DIR / f"extra_exit_{exit_id}.ovpn"
+    CONFIG_DIR.mkdir(exist_ok=True, parents=True)
+    config_path.write_text(node.get("config_text") or "", encoding="utf-8")
+
+    log_to_json("INFO", "多出口", f"正在启动出口 {exit_id}: 节点 {node.get('name')} -> {tun_dev}:{port}")
+
+    # 启动 OpenVPN（route_nopull，不接管系统路由）
+    cancel_event = threading.Event()
+    ok, msg, proc = run_openvpn_until_ready(
+        str(config_path),
+        keep_alive=True,
+        route_nopull=True,
+        timeout=30,
+        dev=tun_dev,
+        cancel_event=cancel_event,
+        track_pending=False,
+    )
+    if not ok or proc is None:
+        raise RuntimeError(f"OpenVPN 启动失败: {msg}")
+
+    # 启动代理（绑定到该出口的 tun 设备）
+    ui_cfg = load_ui_config()
+    bind_host = str(ui_cfg.get("proxy_bind_host") or "0.0.0.0")
+    proxy_thread = threading.Thread(
+        target=proxy_server.start_proxy_server,
+        args=(bind_host, port, tun_dev),
+        daemon=True,
+    )
+    proxy_thread.start()
+
+    extra_exit_processes[exit_id] = {
+        "process": proc,
+        "node_id": node_id,
+        "port": port,
+        "tun": tun_dev,
+        "proxy_thread": proxy_thread,
+        "connected_at": time.time(),
+    }
+    log_to_json("INFO", "多出口", f"出口 {exit_id} 已启动: {tun_dev}:{port}")
+    return f"出口已启动 ({tun_dev}:{port})"
+
+def stop_extra_exit(exit_id: str) -> str:
+    """停止一个额外出口"""
+    global extra_exit_processes
+    runtime = extra_exit_processes.pop(exit_id, None)
+    if not runtime:
+        return "出口未在运行"
+    proc = runtime.get("process")
+    if proc is not None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    log_to_json("INFO", "多出口", f"出口 {exit_id} 已停止")
+    return "出口已停止"
+
+def sync_extra_exits() -> None:
+    """确保所有 enabled 的出口都在运行（开机/配置变更后调用）"""
+    exits = get_extra_exits_config()
+    for ex in exits:
+        eid = ex.get("id", "")
+        enabled = ex.get("enabled", True)
+        runtime = extra_exit_processes.get(eid, {})
+        proc = runtime.get("process")
+        running = proc is not None and proc.poll() is None
+        if enabled and not running:
+            try:
+                start_extra_exit(eid)
+            except Exception as e:
+                log_to_json("ERROR", "多出口", f"出口 {eid} 自动启动失败: {e}")
+        elif not enabled and running:
+            try:
+                stop_extra_exit(eid)
+            except Exception as e:
+                log_to_json("ERROR", "多出口", f"出口 {eid} 停止失败: {e}")
 
 def connect_node(node_id: str) -> str:
     global active_openvpn_process, active_openvpn_node_id
@@ -4591,6 +4763,10 @@ INDEX_HTML = r"""<!doctype html>
           <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
           代理设置
         </a>
+        <a href="javascript:void(0)" onclick="openExitsModal()">
+          <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+          多出口管理
+        </a>
         <a href="javascript:void(0)" onclick="openGatewayModal()">
           <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
           网关设置
@@ -4938,6 +5114,39 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </div>
 
+  <!-- 多出口管理 Modal -->
+  <div id="exits_modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="exits_modal_title" aria-hidden="true">
+    <div class="modal-content" tabindex="-1" style="max-width: 640px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h3 id="exits_modal_title" style="margin: 0; font-size: 18px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
+          <svg xmlns="http://www.w3.org/2000/svg" style="width:20px; height:20px; color: var(--primary);" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+          多出口管理
+        </h3>
+        <button type="button" aria-label="关闭" onclick="closeExitsModal()" style="background: transparent; border: none; padding: 4px; cursor: pointer; color: var(--text-secondary); width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 50%;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">
+          <svg xmlns="http://www.w3.org/2000/svg" style="width:18px; height:18px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      </div>
+
+      <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 16px; line-height: 1.6;">
+        每个出口独立连接一个 VPN 节点、独立代理端口。主出口（7928）不受影响。<br>
+        注意：多开不会让单条下载变快，作用是冗余备份和多设备分流。
+      </div>
+
+      <div id="exits_list" style="margin-bottom: 16px;"></div>
+
+      <div style="border-top: 1px solid var(--border-color); padding-top: 16px;">
+        <div style="font-weight: 600; margin-bottom: 12px; font-size: 14px;">添加新出口</div>
+        <div style="display: flex; gap: 8px;">
+          <select id="exit_node_select" class="input-field" style="flex: 1;">
+            <option value="">选择可用节点...</option>
+          </select>
+          <button type="button" onclick="addExit()" class="btn-primary" style="white-space: nowrap;">添加出口</button>
+        </div>
+        <div id="exits_error" style="display: none; color: #f87171; font-size: 12px; margin-top: 8px;"></div>
+      </div>
+    </div>
+  </div>
+
 
   <!-- VPS 购买推荐 Modal -->
   <div id="vps_recommend_modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="vps_modal_title" aria-hidden="true">
@@ -5169,6 +5378,7 @@ function closeActiveModal() {
   else if (activeModalId === "vps_recommend_modal") closeVpsModal();
   else if (activeModalId === "gateway_modal") closeGatewayModal();
   else if (activeModalId === "logs_modal") closeLogsModal();
+  else if (activeModalId === "exits_modal") closeExitsModal();
 }
 document.querySelectorAll(".modal").forEach(modal => {
   modal.addEventListener("mousedown", event => {
@@ -6685,6 +6895,117 @@ function closeNetworkModal() {
   hideModal("network_modal");
 }
 
+// ============ 多出口管理 ============
+function openExitsModal() {
+  showModal("exits_modal");
+  refreshExitsList();
+  populateExitNodeSelect();
+}
+
+function closeExitsModal() {
+  hideModal("exits_modal");
+}
+
+function populateExitNodeSelect() {
+  const sel = $("exit_node_select");
+  if (!sel || !nodes) return;
+  const usedIds = new Set((state.extra_exits || []).map(e => e.node_id));
+  const available = nodes.filter(n => n.available && !usedIds.has(n.id) && !n.active);
+  sel.innerHTML = '<option value="">选择可用节点...</option>' +
+    available.slice(0, 100).map(n =>
+      `<option value="${esc(n.id)}">${esc(n.name || n.id)} (${esc(n.country || "")}) ${n.latency_ms ? n.latency_ms + "ms" : ""}</option>`
+    ).join("");
+}
+
+function refreshExitsList() {
+  const listEl = $("exits_list");
+  if (!listEl) return;
+  const exits = state.extra_exits || [];
+  if (exits.length === 0) {
+    listEl.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 24px; font-size: 13px;">暂无额外出口，点击下方添加</div>';
+    return;
+  }
+  listEl.innerHTML = exits.map(ex => {
+    const statusColor = ex.running ? "#34d399" : (ex.enabled ? "#f59e0b" : "#6b7280");
+    const statusText = ex.running ? "运行中" : (ex.enabled ? "启动中/已停止" : "已禁用");
+    return `
+    <div style="display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 8px;">
+      <div style="width: 8px; height: 8px; border-radius: 50%; background: ${statusColor}; flex-shrink: 0;"></div>
+      <div style="flex: 1; min-width: 0;">
+        <div style="font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${esc(ex.node_name || ex.node_id)}</div>
+        <div style="font-size: 11px; color: var(--text-secondary);">端口 ${ex.port} · ${esc(ex.tun)} · ${statusText}</div>
+      </div>
+      <div style="display: flex; gap: 6px; flex-shrink: 0;">
+        ${ex.running
+          ? `<button onclick="exitAction('${ex.id}', 'stop')" class="btn-sm" style="padding: 4px 10px; font-size: 12px;">停止</button>`
+          : `<button onclick="exitAction('${ex.id}', 'start')" class="btn-sm btn-primary" style="padding: 4px 10px; font-size: 12px;">启动</button>`}
+        <button onclick="toggleExit('${ex.id}', ${!ex.enabled})" class="btn-sm" style="padding: 4px 10px; font-size: 12px;">${ex.enabled ? "禁用" : "启用"}</button>
+        <button onclick="deleteExit('${ex.id}')" class="btn-sm" style="padding: 4px 10px; font-size: 12px; color: #f87171;">删除</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function addExit() {
+  const nodeId = $("exit_node_select").value;
+  const errEl = $("exits_error");
+  if (!nodeId) {
+    errEl.textContent = "请先选择一个节点";
+    errEl.style.display = "block";
+    return;
+  }
+  errEl.style.display = "none";
+  try {
+    const resp = await fetchWithTimeout("/shi/api/exits", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({node_id: nodeId})
+    });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || "添加失败");
+    if (data.exits) state.extra_exits = data.exits;
+    refreshExitsList();
+    populateExitNodeSelect();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = "block";
+  }
+}
+
+async function exitAction(exitId, action) {
+  try {
+    const resp = await fetchWithTimeout(`/shi/api/exits/${exitId}/${action}`, {method: "POST"});
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || "操作失败");
+    if (data.exits) state.extra_exits = data.exits;
+    refreshExitsList();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function toggleExit(exitId, enabled) {
+  try {
+    const resp = await fetchWithTimeout(`/shi/api/exits/${exitId}/toggle`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({enabled})
+    });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || "操作失败");
+    if (data.exits) state.extra_exits = data.exits;
+    refreshExitsList();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function deleteExit(exitId) {
+  if (!confirm("确定删除这个出口吗？")) return;
+  await exitAction(exitId, "delete");
+  populateExitNodeSelect();
+}
+
 async function saveNetwork(e) {
   e.preventDefault();
   const errorDivEl = $("network_error");
@@ -7668,6 +7989,82 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
+        elif effective_path == "/api/exits":
+            # GET: 列出所有出口状态；POST: 新增出口
+            try:
+                if self.command == "GET":
+                    self.send_json({"ok": True, "exits": get_extra_exit_status()})
+                elif self.command == "POST":
+                    payload = self.read_json_body() or {}
+                    node_id = str(payload.get("node_id") or "").strip()
+                    if not node_id:
+                        self.send_json({"ok": False, "error": "请选择节点"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    exits = get_extra_exits_config()
+                    # 检查节点是否已用于其他出口
+                    if any(e.get("node_id") == node_id for e in exits):
+                        self.send_json({"ok": False, "error": "该节点已用于其他出口"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    import uuid
+                    eid = "exit_" + uuid.uuid4().hex[:8]
+                    tun = _alloc_exit_tun(exits)
+                    port = _alloc_exit_port(exits, int(load_ui_config().get("proxy_port", 7928)))
+                    exits.append({
+                        "id": eid,
+                        "node_id": node_id,
+                        "port": port,
+                        "tun": tun,
+                        "enabled": True,
+                    })
+                    save_extra_exits_config(exits)
+                    # 立即启动
+                    try:
+                        msg = start_extra_exit(eid)
+                    except Exception as e:
+                        msg = f"已添加但启动失败: {e}"
+                    self.send_json({"ok": True, "id": eid, "message": msg, "exits": get_extra_exit_status()})
+                else:
+                    self.send_json({"ok": False, "error": "Method not allowed"}, HTTPStatus.METHOD_NOT_ALLOWED)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        elif effective_path.startswith("/api/exits/"):
+            # /api/exits/<id>/start|stop|delete|toggle
+            try:
+                parts = effective_path.split("/")
+                if len(parts) != 5:
+                    self.send_json({"ok": False, "error": "Invalid path"}, HTTPStatus.BAD_REQUEST)
+                    return
+                eid, action = parts[3], parts[4]
+                if action == "start":
+                    msg = start_extra_exit(eid)
+                    self.send_json({"ok": True, "message": msg, "exits": get_extra_exit_status()})
+                elif action == "stop":
+                    msg = stop_extra_exit(eid)
+                    self.send_json({"ok": True, "message": msg, "exits": get_extra_exit_status()})
+                elif action == "delete":
+                    stop_extra_exit(eid)
+                    exits = [e for e in get_extra_exits_config() if e.get("id") != eid]
+                    save_extra_exits_config(exits)
+                    self.send_json({"ok": True, "message": "出口已删除", "exits": get_extra_exit_status()})
+                elif action == "toggle":
+                    payload = self.read_json_body() or {}
+                    enabled = bool(payload.get("enabled", True))
+                    exits = get_extra_exits_config()
+                    for e in exits:
+                        if e.get("id") == eid:
+                            e["enabled"] = enabled
+                            break
+                    save_extra_exits_config(exits)
+                    sync_extra_exits()
+                    self.send_json({"ok": True, "exits": get_extra_exit_status()})
+                else:
+                    self.send_json({"ok": False, "error": "Unknown action"}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
         elif effective_path == "/api/update_settings":
             try:
                 payload = self.read_json_body()
@@ -8088,7 +8485,16 @@ def main() -> None:
     else:
         proxy_server.set_proxy_credentials(None, None)
     threading.Thread(target=proxy_server.start_proxy_server, args=(_bind_host, LOCAL_PROXY_PORT), daemon=True).start()
-    
+
+    # 启动配置的额外出口（后台线程，避免阻塞主启动流程）
+    def _sync_exits_delayed():
+        time.sleep(10)
+        try:
+            sync_extra_exits()
+        except Exception as e:
+            print(f"[多出口] 启动同步失败: {e}", flush=True)
+    threading.Thread(target=_sync_exits_delayed, daemon=True).start()
+
     # Wait for the gateway to officially start
     print("[网关] 正在启动代理网关...", flush=True)
     gateway_ready = False
