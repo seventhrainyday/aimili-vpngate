@@ -544,6 +544,15 @@ def get_state() -> dict[str, Any]:
         state["extra_exits"] = get_extra_exit_status()
     except Exception:
         state["extra_exits"] = []
+    try:
+        favs = ui_cfg.get("favorite_node_ids", [])
+        state["favorite_node_ids"] = favs if isinstance(favs, list) else []
+    except Exception:
+        state["favorite_node_ids"] = []
+    try:
+        state["traffic"] = proxy_server.get_traffic_stats()
+    except Exception:
+        state["traffic"] = {}
     state["check_interval_minutes"] = ui_cfg.get("check_interval_minutes", 21)
     state["probe_workers"] = ui_cfg.get("probe_workers", 10)
     state["routing_mode"] = ui_cfg.get("routing_mode", "auto")
@@ -4884,6 +4893,16 @@ INDEX_HTML = r"""<!doctype html>
       <option value="residential">住宅IP</option>
       <option value="hosting">机房IP</option>
     </select>
+    <select id="badge_filter" onchange="render()">
+      <option value="">全部评级</option>
+      <option value="0">优质</option>
+      <option value="1">良好</option>
+      <option value="2">一般</option>
+      <option value="3">机房</option>
+      <option value="4">注意</option>
+      <option value="5">未知</option>
+    </select>
+    <input id="search_filter" class="input-field" placeholder="搜索 IP/国家..." style="width: 150px; height: 32px; font-size: 12px;" oninput="render()">
     <div class="view-toggle" style="margin-left: auto;" role="group" aria-label="视图切换">
       <button type="button" id="view_table_btn" class="active" onclick="setNodeView('table')" title="表格视图">
         <svg style="width:15px; height:15px; vertical-align: -2px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
@@ -5257,10 +5276,16 @@ INDEX_HTML = r"""<!doctype html>
           <div style="font-size: 13px; color: var(--text-secondary); text-align: right;">
             出口 IP: <span id="proxy_ip_val" class="mono" style="font-weight: 600; color: var(--text-primary);">-</span> 
             <span id="proxy_latency_val" style="margin-left: 6px;"></span>
+            <div id="traffic_val" style="margin-top: 4px; font-size: 12px;" title="代理流量统计（下载 / 上传）"></div>
           </div>
         </div>
 
-        <div style="display: flex; gap: 12px; justify-content: flex-end;">
+        <div style="display: flex; gap: 12px; justify-content: flex-end; align-items: center;">
+          <span id="speedtest_result" style="font-size: 13px; color: var(--text-secondary);"></span>
+          <button id="btn_speedtest" class="btn-secondary" style="height: 36px; padding: 0 16px; font-size: 13px;" onclick="runSpeedTest()">
+            <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+            测速
+          </button>
           <button id="btn_test_proxy" class="btn-primary" style="height: 36px; padding: 0 16px; font-size: 13px;">
             <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
             开始检测
@@ -5707,6 +5732,8 @@ function clearDiscoveryCountries(event) {
 function getFilteredNodes() {
   const selectedIpType = $("ip_type_filter").value;
   const selectedStatus = $("status_filter").value;
+  const selectedBadge = $("badge_filter") ? $("badge_filter").value : "";
+  const searchKw = $("search_filter") ? $("search_filter").value.trim().toLowerCase() : "";
   return nodes.filter(n => {
     if (!n) return false;
     const countryCode = String(n.country_short || "").trim().toUpperCase();
@@ -5733,6 +5760,13 @@ function getFilteredNodes() {
     const favoriteIds = Array.isArray(state.favorite_node_ids) ? state.favorite_node_ids : [];
     if (showFavoritesOnly && !favoriteIds.includes(n.id)) {
       return false;
+    }
+    if (selectedBadge !== "" && String(badgeRank(n)) !== String(selectedBadge)) {
+      return false;
+    }
+    if (searchKw) {
+      const hay = `${n.ip || ""} ${n.remote_host || ""} ${n.country || ""} ${n.name || ""}`.toLowerCase();
+      if (!hay.includes(searchKw)) return false;
     }
     return true;
   });
@@ -6056,6 +6090,20 @@ function render(){
         pIpVal.textContent = state.proxy_ip || "-";
         const latencyClass = getLatencyClass(state.proxy_latency_ms);
         pLatVal.innerHTML = `<span class="latency-val ${latencyClass}" style="margin-left:8px;">${state.proxy_latency_ms} ms</span>`;
+        // 流量统计
+        const tEl = $("traffic_val");
+        if (tEl && state.traffic) {
+          const ports = Object.keys(state.traffic);
+          if (ports.length > 0) {
+            const fmt = b => b < 1024 ? b + " B" : b < 1048576 ? (b/1024).toFixed(1) + " KB" : b < 1073741824 ? (b/1048576).toFixed(1) + " MB" : (b/1073741824).toFixed(2) + " GB";
+            tEl.innerHTML = ports.map(p => {
+              const t = state.traffic[p];
+              return `<span title="端口 ${p}">↓${fmt(t.rx||0)} ↑${fmt(t.tx||0)}</span>`;
+            }).join(" · ");
+          } else {
+            tEl.textContent = "";
+          }
+        }
       } else {
         pBadge.className = "badge unavailable";
         pBadge.textContent = "不可用";
@@ -6223,6 +6271,35 @@ async function testNode(btn, id, event){
   } finally {
     testingNodeIds.delete(id);
     render();
+  }
+}
+
+async function runSpeedTest() {
+  const btn = $("btn_speedtest");
+  const resultEl = $("speedtest_result");
+  if (!btn || !resultEl) return;
+  btn.disabled = true;
+  btn.style.opacity = "0.5";
+  resultEl.textContent = "测速中...";
+  resultEl.style.color = "var(--text-secondary)";
+  try {
+    const resp = await fetchWithTimeout("./api/speedtest", {method: "POST"}, 40000);
+    const data = await resp.json();
+    if (data.ok) {
+      resultEl.textContent = `↓ ${data.speed_mbps} Mbps`;
+      resultEl.style.color = "#34d399";
+      resultEl.title = `下载速度 ${data.speed_mbps} Mbps (${data.speed_kbps} KB/s)`;
+    } else {
+      resultEl.textContent = "测速失败";
+      resultEl.style.color = "#f87171";
+      resultEl.title = data.error || "未知错误";
+    }
+  } catch (e) {
+    resultEl.textContent = "测速超时";
+    resultEl.style.color = "#f87171";
+  } finally {
+    btn.disabled = false;
+    btn.style.opacity = "1";
   }
 }
 
@@ -8024,6 +8101,107 @@ class Handler(BaseHTTPRequestHandler):
                     threading.Thread(target=restart_server, daemon=True).start()
                 else:
                     self.send_json({"ok": True, "restart_needed": False, "reauth_required": reauth_required, "message": "账号密码配置更新成功，已即时生效！"})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        elif effective_path == "/api/traffic":
+            # GET - 获取各代理端口流量统计
+            try:
+                stats = proxy_server.get_traffic_stats()
+                # 格式化为人类可读
+                def fmt(b):
+                    if b < 1024: return f"{b} B"
+                    if b < 1024**2: return f"{b/1024:.1f} KB"
+                    if b < 1024**3: return f"{b/1024**2:.1f} MB"
+                    return f"{b/1024**3:.2f} GB"
+                out = {}
+                for port, v in stats.items():
+                    rx, tx = v.get("rx", 0), v.get("tx", 0)
+                    out[str(port)] = {
+                        "rx": rx, "tx": tx, "total": rx + tx,
+                        "rx_h": fmt(rx), "tx_h": fmt(tx), "total_h": fmt(rx + tx),
+                    }
+                self.send_json({"ok": True, "traffic": out})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        elif effective_path == "/api/speedtest":
+            # POST - 测试当前代理连接的下载速度
+            try:
+                import subprocess
+                # 用 10MB 测试文件测速
+                test_url = "http://speedtest.tele2.net/10MB.zip"
+                # 也可尝试 cloudflare
+                alt_url = "https://speed.cloudflare.com/__down?bytes=10000000"
+
+                proxy_hosts = []
+                if LOCAL_PROXY_HOST == "0.0.0.0":
+                    proxy_hosts = ["127.0.0.1"]
+                else:
+                    proxy_hosts = [LOCAL_PROXY_HOST]
+                # 用配置的 bind host
+                try:
+                    _cfg = load_ui_config()
+                    _bh = str(_cfg.get("proxy_bind_host") or "0.0.0.0")
+                    if _bh == "0.0.0.0":
+                        proxy_hosts = ["127.0.0.1"]
+                    else:
+                        proxy_hosts = [_bh]
+                except Exception:
+                    pass
+
+                p_host = proxy_hosts[0]
+                proxy_url = f"socks5h://{p_host}:{LOCAL_PROXY_PORT}"
+                proxy_user, proxy_pass = proxy_server.get_proxy_credentials()
+
+                result = None
+                for url in [test_url, alt_url]:
+                    cmd = ["curl", "-s", "-o", "/dev/null", "-w", "%{speed_download}",
+                           "-x", proxy_url, url, "--max-time", "30"]
+                    if proxy_user is not None and proxy_pass is not None:
+                        cmd.extend(["--proxy-user", f"{proxy_user}:{proxy_pass}"])
+                    try:
+                        res = subprocess.run(cmd, capture_output=True, text=True, timeout=35)
+                        if res.returncode == 0:
+                            speed_bps = float(res.stdout.strip() or 0)
+                            if speed_bps > 0:
+                                speed_mbps = round(speed_bps * 8 / 1_000_000, 2)
+                                result = {"ok": True, "speed_mbps": speed_mbps,
+                                          "speed_kbps": round(speed_bps / 1024, 1)}
+                                break
+                    except Exception:
+                        continue
+                if result:
+                    self.send_json(result)
+                else:
+                    self.send_json({"ok": False, "error": "测速失败，代理无法下载测试文件"}, HTTPStatus.BAD_GATEWAY)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        elif effective_path == "/api/toggle_favorite":
+            # POST {"id": "<node_id>"} - 切换收藏（前端 toggleFavorite 用）
+            try:
+                payload = self.read_json_body() or {}
+                nid = str(payload.get("id") or "").strip()
+                if not nid:
+                    self.send_json({"ok": False, "error": "缺少节点 ID"}, HTTPStatus.BAD_REQUEST)
+                    return
+                ui_cfg = load_ui_config()
+                favs = ui_cfg.get("favorite_node_ids", [])
+                if not isinstance(favs, list):
+                    favs = []
+                if nid in favs:
+                    favs.remove(nid)
+                else:
+                    favs.append(nid)
+                ui_cfg["favorite_node_ids"] = favs
+                auth_file = DATA_DIR / "ui_auth.json"
+                with lock:
+                    write_json(auth_file, ui_cfg)
+                self.send_json({"ok": True, "favorite_node_ids": favs})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return

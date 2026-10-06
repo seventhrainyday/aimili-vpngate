@@ -234,7 +234,26 @@ def create_connection(address: tuple[str, int], timeout: float = 20, device: str
     else:
         raise OSError("getaddrinfo returns empty list")
 
+# 流量统计：{port: {"rx": bytes, "tx": bytes}}，由 vpngate_manager 读取
+_traffic_stats: dict[int, dict[str, int]] = {}
+_traffic_lock = threading.Lock()
+# 每个代理实例的端口（thread-local，多出口时每个实例独立）
+_proxy_local = threading.local()
+
+def get_traffic_stats() -> dict[int, dict[str, int]]:
+    with _traffic_lock:
+        return {p: dict(v) for p, v in _traffic_stats.items()}
+
+def reset_traffic_stats(port: int | None = None) -> None:
+    with _traffic_lock:
+        if port is None:
+            _traffic_stats.clear()
+        else:
+            _traffic_stats.pop(port, None)
+
 def relay(left: socket.socket, right: socket.socket) -> None:
+    # left = 客户端，right = 上游。rx = 从上游收到（下载），tx = 发往上游（上传）
+    port = getattr(_proxy_local, "port", 0)
     sockets = [left, right]
     while True:
         readable, _, errored = select.select(sockets, [], sockets, 120)
@@ -246,6 +265,14 @@ def relay(left: socket.socket, right: socket.socket) -> None:
             if not data:
                 return
             target.sendall(data)
+            # 统计流量
+            if port:
+                with _traffic_lock:
+                    st = _traffic_stats.setdefault(port, {"rx": 0, "tx": 0})
+                    if source is right:
+                        st["rx"] += len(data)  # 从上游来 = 下载
+                    else:
+                        st["tx"] += len(data)  # 发往上游 = 上传
 
 def socks5_client(client: socket.socket, first_byte: bytes, device: str = "tun0") -> None:
     upstream = None
@@ -410,6 +437,7 @@ def proxy_client(client: socket.socket, address: tuple[str, int], device: str = 
             pass
 
 def start_proxy_server(host: str, port: int, device: str = "tun0") -> None:
+    _proxy_local.port = port
     is_ipv6 = ":" in host or host == ""
     af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
     server = None
@@ -477,6 +505,7 @@ def start_proxy_server(host: str, port: int, device: str = "tun0") -> None:
                 continue
 
             def run_client(client_socket: socket.socket = client, client_address: tuple[str, int] = address) -> None:
+                _proxy_local.port = port  # worker 线程设置自己的端口
                 try:
                     proxy_client(client_socket, client_address, device)
                 finally:
