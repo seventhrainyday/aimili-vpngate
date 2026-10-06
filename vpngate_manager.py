@@ -8005,7 +8005,6 @@ class Handler(BaseHTTPRequestHandler):
                     if any(e.get("node_id") == node_id for e in exits):
                         self.send_json({"ok": False, "error": "该节点已用于其他出口"}, HTTPStatus.BAD_REQUEST)
                         return
-                    import uuid
                     eid = "exit_" + uuid.uuid4().hex[:8]
                     tun = _alloc_exit_tun(exits)
                     port = _alloc_exit_port(exits, int(load_ui_config().get("proxy_port", 7928)))
