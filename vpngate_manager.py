@@ -2371,6 +2371,10 @@ def get_extra_exit_status() -> list[dict[str, Any]]:
             "enabled": ex.get("enabled", True),
             "running": running,
             "connected_at": runtime.get("connected_at", 0),
+            "routing_mode": ex.get("routing_mode", "auto"),
+            "force_country": ex.get("force_country", ""),
+            "routing_ip_type": ex.get("routing_ip_type", "all"),
+            "auto_switch": ex.get("auto_switch", True),
         })
     return result
 
@@ -2476,6 +2480,111 @@ def stop_extra_exit(exit_id: str) -> str:
                 pass
     log_to_json("INFO", "多出口", f"出口 {exit_id} 已停止")
     return "出口已停止"
+
+def check_exit_health(exit_id: str) -> tuple[bool, str]:
+    """检查出口健康：OpenVPN 进程 + 代理端口"""
+    runtime = extra_exit_processes.get(exit_id)
+    if not runtime:
+        return False, "未运行"
+    proc = runtime.get("process")
+    if proc is None or proc.poll() is not None:
+        return False, "OpenVPN 进程已退出"
+    port = runtime.get("port", 0)
+    # 检查代理端口是否监听
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(2)
+        s.connect(("127.0.0.1", port))
+        s.close()
+    except Exception as e:
+        return False, f"代理端口 {port} 无响应"
+    return True, "正常"
+
+def auto_switch_exit(exit_id: str) -> str:
+    """多出口自动切换：按该出口的路由模式/IP类型挑选最佳节点"""
+    exits = get_extra_exits_config()
+    ex = next((e for e in exits if e.get("id") == exit_id), None)
+    if not ex:
+        raise ValueError(f"出口不存在: {exit_id}")
+
+    routing_mode = ex.get("routing_mode", "auto")
+    force_country = ex.get("force_country", "")
+    routing_ip_type = ex.get("routing_ip_type", "all")
+
+    # fixed_ip 模式：只重连原节点，不切换
+    if routing_mode == "fixed_ip":
+        log_to_json("INFO", "多出口", f"出口 {exit_id} 为固定IP模式，尝试重连原节点")
+        stop_extra_exit(exit_id)
+        return start_extra_exit(exit_id)
+
+    # 挑选候选
+    with lock:
+        nodes = read_nodes()
+        # 排除已被其他出口使用的节点
+        used_node_ids = {e.get("node_id") for e in exits if e.get("id") != exit_id}
+        candidates = [
+            n for n in nodes
+            if n.get("probe_status") == "available"
+            and n.get("id") not in used_node_ids
+        ]
+        # 国家过滤
+        if routing_mode == "fixed_region" and force_country:
+            candidates = [n for n in candidates if country_matches(n.get("country"), force_country, n.get("country_short"))]
+        # IP 类型过滤
+        if routing_ip_type == "residential":
+            candidates = [n for n in candidates if n.get("ip_type") in ("residential", "mobile")]
+        elif routing_ip_type == "hosting":
+            candidates = [n for n in candidates if n.get("ip_type") == "hosting"]
+        # 排序：徽章 → 拉取时间 → 评分 → 延迟
+        candidates.sort(key=lambda n: (
+            badge_rank(n),
+            -float(n.get("last_seen_at") or 0),
+            -parse_int(n.get("score")),
+            parse_int(n.get("latency_ms")) or 999999,
+        ))
+
+    if not candidates:
+        raise RuntimeError("没有可用的备选节点")
+
+    best = candidates[0]
+    log_to_json("INFO", "多出口", f"出口 {exit_id} 自动切换至节点 {best.get('name', best['id'])}")
+    send_notify("🔄 多出口切换", f"出口 {ex.get('port')} 切换至 {best.get('name', best['id'])}")
+
+    # 更新配置的节点
+    ex["node_id"] = best["id"]
+    save_extra_exits_config(exits)
+
+    # 重启出口
+    stop_extra_exit(exit_id)
+    return start_extra_exit(exit_id)
+
+def exit_monitor_loop() -> None:
+    """多出口健康监控：每 60 秒检查一次，异常时自动恢复"""
+    print("[多出口监控] 启动", flush=True)
+    while True:
+        try:
+            time.sleep(60)
+            exits = get_extra_exits_config()
+            for ex in exits:
+                eid = ex.get("id", "")
+                if not ex.get("enabled", True):
+                    continue
+                healthy, reason = check_exit_health(eid)
+                if not healthy:
+                    log_to_json("WARNING", "多出口", f"出口 {eid} 异常 ({reason})，尝试恢复")
+                    try:
+                        if ex.get("auto_switch", True) and ex.get("routing_mode", "auto") != "fixed_ip":
+                            auto_switch_exit(eid)
+                        else:
+                            stop_extra_exit(eid)
+                            start_extra_exit(eid)
+                        log_to_json("INFO", "多出口", f"出口 {eid} 已恢复")
+                    except Exception as e:
+                        log_to_json("ERROR", "多出口", f"出口 {eid} 恢复失败: {e}")
+                        send_notify("⚠️ 多出口故障", f"出口 {ex.get('port')} 恢复失败: {e}")
+        except Exception as e:
+            print(f"[多出口监控] 异常: {e}", flush=True)
 
 def sync_extra_exits() -> None:
     """确保所有 enabled 的出口都在运行（开机/配置变更后调用）"""
@@ -5268,13 +5377,73 @@ INDEX_HTML = r"""<!doctype html>
 
       <div style="border-top: 1px solid var(--border-color); padding-top: 16px;">
         <div style="font-weight: 600; margin-bottom: 12px; font-size: 14px;">添加新出口</div>
-        <div style="display: flex; gap: 8px;">
-          <select id="exit_node_select" class="input-field" style="flex: 1;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+          <select id="exit_node_select" class="input-field" style="grid-column: 1 / -1;">
             <option value="">选择可用节点...</option>
           </select>
-          <button type="button" onclick="addExit()" class="btn-primary" style="white-space: nowrap;">添加出口</button>
+          <input id="exit_port_input" type="number" class="input-field" placeholder="端口（留空自动分配）" min="1024" max="65535">
+          <select id="exit_routing_mode" class="input-field">
+            <option value="auto">自动切换</option>
+            <option value="fixed_ip">固定 IP（不切换）</option>
+            <option value="fixed_region">固定地区</option>
+          </select>
+          <input id="exit_country_input" type="text" class="input-field" placeholder="国家代码（如 JP，固定地区时用）" style="display: none;">
+          <select id="exit_ip_type" class="input-field">
+            <option value="all">所有 IP 类型</option>
+            <option value="residential">仅住宅 IP</option>
+            <option value="hosting">仅机房 IP</option>
+          </select>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer;">
+            <input type="checkbox" id="exit_auto_switch" checked style="accent-color: var(--primary);"> 故障自动切换
+          </label>
+          <button type="button" onclick="addExit()" class="btn-primary" style="white-space: nowrap; margin-left: auto;">添加出口</button>
         </div>
         <div id="exits_error" style="display: none; color: #f87171; font-size: 12px; margin-top: 8px;"></div>
+      </div>
+
+      <!-- 编辑出口 Modal -->
+      <div id="exit_edit_modal" class="modal" role="dialog" aria-modal="true" aria-hidden="true" style="display: none;">
+        <div class="modal-content" tabindex="-1" style="max-width: 440px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <h3 style="margin: 0; font-size: 16px;">编辑出口</h3>
+            <button type="button" onclick="closeExitEditModal()" style="background: transparent; border: none; cursor: pointer; font-size: 20px; color: var(--text-secondary);">&times;</button>
+          </div>
+          <input type="hidden" id="edit_exit_id">
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label class="form-label">端口（改动后自动重启该出口）</label>
+            <input type="number" id="edit_exit_port" class="input-field" min="1024" max="65535">
+          </div>
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label class="form-label">路由模式</label>
+            <select id="edit_exit_routing" class="input-field">
+              <option value="auto">自动切换</option>
+              <option value="fixed_ip">固定 IP（不切换）</option>
+              <option value="fixed_region">固定地区</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label class="form-label">国家代码（固定地区时用，如 JP）</label>
+            <input type="text" id="edit_exit_country" class="input-field" placeholder="JP">
+          </div>
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label class="form-label">IP 类型过滤</label>
+            <select id="edit_exit_iptype" class="input-field">
+              <option value="all">所有 IP 类型</option>
+              <option value="residential">仅住宅 IP</option>
+              <option value="hosting">仅机房 IP</option>
+            </select>
+          </div>
+          <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 13px; cursor: pointer;">
+            <input type="checkbox" id="edit_exit_autoswitch" style="accent-color: var(--primary);"> 故障自动切换
+          </label>
+          <div style="display: flex; gap: 8px; justify-content: flex-end;">
+            <button onclick="closeExitEditModal()" class="btn-sm">取消</button>
+            <button onclick="saveExitEdit()" class="btn-primary btn-sm">保存</button>
+          </div>
+          <div id="edit_exit_error" style="display: none; color: #f87171; font-size: 12px; margin-top: 8px;"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -7262,6 +7431,67 @@ function populateExitNodeSelect() {
     ).join("");
 }
 
+// 固定地区时显示国家输入框
+document.addEventListener("change", e => {
+  if (e.target && e.target.id === "exit_routing_mode") {
+    const ci = $("exit_country_input");
+    if (ci) ci.style.display = e.target.value === "fixed_region" ? "" : "none";
+  }
+});
+
+function openExitEdit(exitId) {
+  const ex = (state.extra_exits || []).find(x => x.id === exitId);
+  if (!ex) return;
+  $("edit_exit_id").value = exitId;
+  $("edit_exit_port").value = ex.port || "";
+  $("edit_exit_routing").value = ex.routing_mode || "auto";
+  $("edit_exit_country").value = ex.force_country || "";
+  $("edit_exit_iptype").value = ex.routing_ip_type || "all";
+  $("edit_exit_autoswitch").checked = ex.auto_switch !== false;
+  $("edit_exit_error").style.display = "none";
+  $("exit_edit_modal").style.display = "flex";
+}
+
+function closeExitEditModal() {
+  $("exit_edit_modal").style.display = "none";
+}
+
+async function saveExitEdit() {
+  const eid = $("edit_exit_id").value;
+  const errEl = $("edit_exit_error");
+  const port = parseInt($("edit_exit_port").value) || 0;
+  const routing = $("edit_exit_routing").value;
+  const country = $("edit_exit_country").value.trim().toUpperCase();
+  if (routing === "fixed_region" && !country) {
+    errEl.textContent = "固定地区模式请填写国家代码";
+    errEl.style.display = "block";
+    return;
+  }
+  errEl.style.display = "none";
+  try {
+    const resp = await fetchWithTimeout(`/shi/api/exits/${eid}`, {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        port: port || undefined,
+        routing_mode: routing,
+        force_country: country,
+        routing_ip_type: $("edit_exit_iptype").value,
+        auto_switch: $("edit_exit_autoswitch").checked
+      })
+    });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || "保存失败");
+    if (data.exits) state.extra_exits = data.exits;
+    closeExitEditModal();
+    refreshExitsList();
+    if (data.message) alert(data.message);
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = "block";
+  }
+}
+
 function refreshExitsList() {
   const listEl = $("exits_list");
   if (!listEl) return;
@@ -7270,6 +7500,17 @@ function refreshExitsList() {
     listEl.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 24px; font-size: 13px;">暂无额外出口，点击下方添加</div>';
     return;
   }
+  const routingLabel = ex => {
+    const rm = ex.routing_mode || "auto";
+    const labels = {auto: "自动", fixed_ip: "固定IP", fixed_region: "固定地区"};
+    let t = labels[rm] || rm;
+    if (rm === "fixed_region" && ex.force_country) t += `(${ex.force_country})`;
+    const it = ex.routing_ip_type || "all";
+    if (it === "residential") t += " · 住宅IP";
+    else if (it === "hosting") t += " · 机房IP";
+    if (ex.auto_switch === false) t += " · 不自动切换";
+    return t;
+  };
   listEl.innerHTML = exits.map(ex => {
     const statusColor = ex.running ? "#34d399" : (ex.enabled ? "#f59e0b" : "#6b7280");
     const statusText = ex.running ? "运行中" : (ex.enabled ? "启动中/已停止" : "已禁用");
@@ -7279,11 +7520,13 @@ function refreshExitsList() {
       <div style="flex: 1; min-width: 0;">
         <div style="font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${esc(ex.node_name || ex.node_id)}</div>
         <div style="font-size: 11px; color: var(--text-secondary);">端口 ${ex.port} · ${esc(ex.tun)} · ${statusText}</div>
+        <div style="font-size: 11px; color: var(--text-secondary);">${esc(routingLabel(ex))}</div>
       </div>
-      <div style="display: flex; gap: 6px; flex-shrink: 0;">
+      <div style="display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap;">
         ${ex.running
           ? `<button onclick="exitAction('${ex.id}', 'stop')" class="btn-sm" style="padding: 4px 10px; font-size: 12px;">停止</button>`
           : `<button onclick="exitAction('${ex.id}', 'start')" class="btn-sm btn-primary" style="padding: 4px 10px; font-size: 12px;">启动</button>`}
+        <button onclick="openExitEdit('${ex.id}')" class="btn-sm" style="padding: 4px 10px; font-size: 12px;">编辑</button>
         <button onclick="toggleExit('${ex.id}', ${!ex.enabled})" class="btn-sm" style="padding: 4px 10px; font-size: 12px;">${ex.enabled ? "禁用" : "启用"}</button>
         <button onclick="deleteExit('${ex.id}')" class="btn-sm" style="padding: 4px 10px; font-size: 12px; color: #f87171;">删除</button>
       </div>
@@ -7300,11 +7543,28 @@ async function addExit() {
     return;
   }
   errEl.style.display = "none";
+  const portVal = $("exit_port_input") ? parseInt($("exit_port_input").value) || 0 : 0;
+  const routingMode = $("exit_routing_mode") ? $("exit_routing_mode").value : "auto";
+  const forceCountry = $("exit_country_input") ? $("exit_country_input").value.trim().toUpperCase() : "";
+  const ipType = $("exit_ip_type") ? $("exit_ip_type").value : "all";
+  const autoSw = $("exit_auto_switch") ? $("exit_auto_switch").checked : true;
+  if (routingMode === "fixed_region" && !forceCountry) {
+    errEl.textContent = "固定地区模式请填写国家代码";
+    errEl.style.display = "block";
+    return;
+  }
   try {
     const resp = await fetchWithTimeout("/shi/api/exits", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({node_id: nodeId})
+      body: JSON.stringify({
+        node_id: nodeId,
+        port: portVal || undefined,
+        routing_mode: routingMode,
+        force_country: forceCountry,
+        routing_ip_type: ipType,
+        auto_switch: autoSw
+      })
     });
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error || "添加失败");
@@ -8548,15 +8808,44 @@ class Handler(BaseHTTPRequestHandler):
                     if any(e.get("node_id") == node_id for e in exits):
                         self.send_json({"ok": False, "error": "该节点已用于其他出口"}, HTTPStatus.BAD_REQUEST)
                         return
+                    # 端口：用户指定或自动分配
+                    try:
+                        req_port = int(payload.get("port") or 0)
+                    except (TypeError, ValueError):
+                        req_port = 0
+                    base_port = int(load_ui_config().get("proxy_port", 7928))
+                    if req_port:
+                        if not (1024 <= req_port <= 65535):
+                            self.send_json({"ok": False, "error": "端口必须在 1024-65535 之间"}, HTTPStatus.BAD_REQUEST)
+                            return
+                        used_ports = {e.get("port") for e in exits} | {base_port}
+                        if req_port in used_ports:
+                            self.send_json({"ok": False, "error": f"端口 {req_port} 已被占用"}, HTTPStatus.BAD_REQUEST)
+                            return
+                        port = req_port
+                    else:
+                        port = _alloc_exit_port(exits, base_port)
+                    # 路由配置
+                    routing_mode = str(payload.get("routing_mode") or "auto").strip()
+                    if routing_mode not in ("auto", "fixed_ip", "fixed_region"):
+                        routing_mode = "auto"
+                    force_country = str(payload.get("force_country") or "").strip()
+                    routing_ip_type = str(payload.get("routing_ip_type") or "all").strip()
+                    if routing_ip_type not in ("all", "residential", "hosting"):
+                        routing_ip_type = "all"
+                    auto_switch = bool(payload.get("auto_switch", True))
                     eid = "exit_" + uuid.uuid4().hex[:8]
                     tun = _alloc_exit_tun(exits)
-                    port = _alloc_exit_port(exits, int(load_ui_config().get("proxy_port", 7928)))
                     exits.append({
                         "id": eid,
                         "node_id": node_id,
                         "port": port,
                         "tun": tun,
                         "enabled": True,
+                        "routing_mode": routing_mode,
+                        "force_country": force_country,
+                        "routing_ip_type": routing_ip_type,
+                        "auto_switch": auto_switch,
                     })
                     save_extra_exits_config(exits)
                     # 立即启动
@@ -8567,6 +8856,63 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True, "id": eid, "message": msg, "exits": get_extra_exit_status()})
                 else:
                     self.send_json({"ok": False, "error": "Method not allowed"}, HTTPStatus.METHOD_NOT_ALLOWED)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        elif effective_path.startswith("/api/exits/") and effective_path.count("/") == 3:
+            # PUT /api/exits/<id> - 更新出口配置（端口/路由模式/IP类型/自动切换）
+            try:
+                if self.command != "PUT":
+                    self.send_json({"ok": False, "error": "Method not allowed"}, HTTPStatus.METHOD_NOT_ALLOWED)
+                    return
+                eid = effective_path.split("/")[3]
+                payload = self.read_json_body() or {}
+                exits = get_extra_exits_config()
+                ex = next((e for e in exits if e.get("id") == eid), None)
+                if not ex:
+                    self.send_json({"ok": False, "error": "出口不存在"}, HTTPStatus.NOT_FOUND)
+                    return
+                # 端口
+                if "port" in payload:
+                    try:
+                        new_port = int(payload["port"])
+                    except (TypeError, ValueError):
+                        self.send_json({"ok": False, "error": "端口无效"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    if not (1024 <= new_port <= 65535):
+                        self.send_json({"ok": False, "error": "端口必须在 1024-65535 之间"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    base_port = int(load_ui_config().get("proxy_port", 7928))
+                    used = {e.get("port") for e in exits if e.get("id") != eid} | {base_port}
+                    if new_port in used:
+                        self.send_json({"ok": False, "error": f"端口 {new_port} 已被占用"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    ex["port"] = new_port
+                # 路由模式
+                if "routing_mode" in payload:
+                    rm = str(payload["routing_mode"]).strip()
+                    if rm in ("auto", "fixed_ip", "fixed_region"):
+                        ex["routing_mode"] = rm
+                if "force_country" in payload:
+                    ex["force_country"] = str(payload["force_country"] or "").strip()
+                if "routing_ip_type" in payload:
+                    rit = str(payload["routing_ip_type"]).strip()
+                    if rit in ("all", "residential", "hosting"):
+                        ex["routing_ip_type"] = rit
+                if "auto_switch" in payload:
+                    ex["auto_switch"] = bool(payload["auto_switch"])
+                save_extra_exits_config(exits)
+                # 端口变了需要重启该出口
+                need_restart = "port" in payload
+                msg = "配置已更新"
+                if need_restart:
+                    try:
+                        stop_extra_exit(eid)
+                        msg = start_extra_exit(eid)
+                    except Exception as e:
+                        msg = f"配置已保存，但重启失败: {e}"
+                self.send_json({"ok": True, "message": msg, "exits": get_extra_exit_status()})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
@@ -9045,6 +9391,11 @@ def main() -> None:
             sync_extra_exits()
         except Exception as e:
             print(f"[多出口] 启动同步失败: {e}", flush=True)
+        # 启动健康监控循环
+        try:
+            exit_monitor_loop()
+        except Exception as e:
+            print(f"[多出口] 监控循环异常退出: {e}", flush=True)
     threading.Thread(target=_sync_exits_delayed, daemon=True).start()
 
     # Wait for the gateway to officially start
