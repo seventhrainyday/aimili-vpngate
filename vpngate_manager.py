@@ -5449,6 +5449,17 @@ function setNodeView(mode) {
     } catch (e) {
       console.error("[setNodeView] 兜底渲染失败:", e);
     }
+    // 如果总数据是空的，主动重新拉取一次
+    if ((!Array.isArray(nodes) || nodes.length === 0) && !window._cardViewRefetching) {
+      window._cardViewRefetching = true;
+      fetchNodesSnapshot().then(d => {
+        applyNodesSnapshot(d);
+      }).catch(e => {
+        console.error("[setNodeView] 重新拉取失败:", e);
+      }).finally(() => {
+        window._cardViewRefetching = false;
+      });
+    }
   }
 }
 (function restoreNodeView(){
@@ -5898,6 +5909,12 @@ async function fetchNodesSnapshot() {
 function applyNodesSnapshot(data) {
   const nextNodes = Array.isArray(data && data.nodes) ? data.nodes : [];
   const nextState = data && data.state ? data.state : {};
+  // 防御：API 返回空节点列表时不 wipe 旧数据（很可能是服务端瞬时异常）
+  // 只有当之前有数据、现在变空时才跳过；首次加载空是正常的
+  if (nextNodes.length === 0 && nodes.length > 0) {
+    console.warn("[applyNodesSnapshot] API 返回空节点列表，保留旧数据不覆盖");
+    return false;
+  }
   const signature = JSON.stringify([nextNodes, nextState]);
   if (signature === lastNodesSnapshotSignature) return false;
 
