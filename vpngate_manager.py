@@ -5849,6 +5849,12 @@ let lastNodesSnapshotSignature = "";
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
+function apiBase() {
+  const p = window.location.pathname;
+  const m = p.match(/^\/([^\/]+)\//);
+  return m ? "/" + m[1] : "";
+}
+function apiUrl(path) { return apiBase() + path; }
 function fetchWithTimeout(resource, options = {}, timeoutMs = 20000) {
   if (typeof AbortController === "undefined") return fetch(resource, options);
   const controller = new AbortController();
