@@ -278,6 +278,34 @@ def tcp_latency_ms(host: str, port: int, dev: str | None = None) -> int:
             except Exception:
                 pass
 
+def tcp_port_reachable(host: str, port: int, timeout: float = 3.0) -> bool:
+    """快速 TCP 端口可达性预检。
+
+    在跑 OpenVPN 握手测试前先用短超时连一下 VPN 端口，连不上说明节点
+    已死，直接判不可用，省掉 ping + 12 秒 OpenVPN 超时等待。
+    """
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return False
+    if not host or port <= 0 or port > 65535:
+        return False
+    af = socket.AF_INET6 if ":" in str(host) else socket.AF_INET
+    s = None
+    try:
+        s = socket.socket(af, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((str(host), port))
+        return True
+    except OSError:
+        return False
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+
 def ping_latency_ms(host: str, port: int, fallback_ping: int = 0) -> int:
     dev = get_physical_interface()
     # 1. Try ping with interface binding

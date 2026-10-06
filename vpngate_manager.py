@@ -119,7 +119,9 @@ API_SOURCE_DEADLINE_SECONDS = env_int("API_SOURCE_DEADLINE_SECONDS", 6, 2, 30)
 OPENVPN_TEST_TIMEOUT_SECONDS = env_int("OPENVPN_TEST_TIMEOUT_SECONDS", 35, 1)
 MANUAL_TEST_NODE_LIMIT = env_int("MANUAL_TEST_NODE_LIMIT", 5, 1, 20)
 INITIAL_CONNECT_TEST_LIMIT = env_int("INITIAL_CONNECT_TEST_LIMIT", 10, 1, 50)
-NODE_PROBE_WORKERS = env_int("NODE_PROBE_WORKERS", 5, 1, 20)
+NODE_PROBE_WORKERS = env_int("NODE_PROBE_WORKERS", 10, 1, 20)
+# 节点累积存储上限：拉取新节点时不再删除老节点，仅在超过该上限时按策略淘汰
+MAX_STORED_NODES = env_int("MAX_STORED_NODES", 1000, 100)
 PROXY_FAILURE_THRESHOLD = env_int("PROXY_FAILURE_THRESHOLD", 3, 1, 10)
 SWITCH_PREFLIGHT_MAX_AGE_SECONDS = env_int("SWITCH_PREFLIGHT_MAX_AGE_SECONDS", 180, 0, 3600)
 OPENVPN_CMD = os.environ.get("OPENVPN_CMD", "openvpn")
@@ -1888,20 +1890,25 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
     except Exception as e:
         raise RuntimeError(f"Failed to write temp config file: {e}")
 
-    latency = vpn_utils.ping_latency_ms(h, p, fallback_ping)
-    
-    idx = None
-    try:
-        idx = get_free_test_index()
-        ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=f"tun{idx}")
-    finally:
-        if idx is not None:
-            release_test_index(idx)
+    latency = 0
+    ok = False
+    # 快速预检：TCP 端口 3 秒连不上，直接判不可用，跳过 ping 和 OpenVPN 握手等待
+    if not vpn_utils.tcp_port_reachable(h, p, timeout=3.0):
+        message = f"TCP {h}:{p} 3 秒内无法连通，跳过 OpenVPN 握手测试"
+    else:
+        latency = vpn_utils.ping_latency_ms(h, p, fallback_ping)
+        idx = None
         try:
-            if temp_path.exists():
-                temp_path.unlink()
-        except Exception:
-            pass
+            idx = get_free_test_index()
+            ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=f"tun{idx}")
+        finally:
+            if idx is not None:
+                release_test_index(idx)
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
 
     temp_node = {
         "id": node_id,
@@ -1978,7 +1985,22 @@ def test_multiple_nodes(node_ids: list[str], target_available: int | None = None
                 "probe_message": f"Failed to write configuration: {e}",
                 "probed_at": time.time(),
             }
-            
+
+        # 快速预检：TCP 端口 3 秒连不上，直接判不可用，跳过 ping 和 OpenVPN 握手等待
+        if not vpn_utils.tcp_port_reachable(h, p, timeout=3.0):
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
+            return {
+                "id": node_id,
+                "latency_ms": 0,
+                "probe_status": "unavailable",
+                "probe_message": f"TCP {h}:{p} 3 秒内无法连通，跳过 OpenVPN 握手测试",
+                "probed_at": time.time(),
+            }
+
         latency = vpn_utils.ping_latency_ms(h, p, fallback_ping)
         tun_idx = None
         try:
@@ -2407,6 +2429,42 @@ def connect_node(node_id: str) -> str:
         finish_connection_attempt(token, cancel_event)
         set_state(pending_node_id="")
 
+def prune_stored_nodes(nodes: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """节点存储超过上限时的淘汰策略。
+
+    仅在节点总数超过 MAX_STORED_NODES 时触发，优先保留：
+    1) 当前活动连接的节点；2) 探测可用的节点；
+    3) 近期仍出现在 VPNGate 列表中的节点；4) 近期探测过的节点。
+    正常情况下（未超上限）老节点不会被删除。
+    """
+    active_id = str(active_openvpn_node_id or "")
+
+    def keep_key(n: dict[str, Any]) -> tuple:
+        nid = str(n.get("id") or "")
+        is_active = 1 if nid and nid == active_id else 0
+        status_rank = {"available": 2, "testing": 1, "not_checked": 1}.get(
+            str(n.get("probe_status") or ""), 0
+        )
+        try:
+            last_seen = float(n.get("last_seen_at") or 0)
+        except (TypeError, ValueError):
+            last_seen = 0
+        try:
+            probed_at = float(n.get("probed_at") or 0)
+        except (TypeError, ValueError):
+            probed_at = 0
+        return (is_active, status_rank, last_seen, probed_at)
+
+    ranked = sorted(nodes, key=keep_key, reverse=True)
+    pruned = ranked[:limit]
+    dropped = len(nodes) - len(pruned)
+    if dropped > 0:
+        msg = f"[节点存储] 节点数超过上限 {limit}，已淘汰 {dropped} 个长期不可用且长期未出现的节点"
+        print(msg, flush=True)
+        log_to_json("WARNING", "Main", msg)
+    return pruned
+
+
 def maintain_valid_nodes(force: bool = False) -> str:
     global active_openvpn_process, active_openvpn_node_id, is_connecting
     ensure_dirs()
@@ -2465,53 +2523,65 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 for n in current_nodes
                 if n.get("id")
             }
-            active_node = None
-            if active_openvpn_node_id:
-                active_node = next((n for n in current_nodes if n.get("id") == active_openvpn_node_id), None)
-                
+            blacklist = load_blacklist()
+            now = time.time()
             merged: list[dict[str, Any]] = []
             seen_ids: set[str] = set()
-            
-            if active_node:
-                merged.append(active_node)
-                seen_ids.add(active_node["id"])
-                
+
+            # 1) 本轮新拉取的候选：已存在的更新动态字段并刷新 last_seen_at，全新的追加
             for cand in candidates:
-                if cand["id"] not in seen_ids:
-                    previous = current_by_id.get(str(cand["id"]))
-                    if previous:
-                        for key in [
-                            "probe_status",
-                            "probe_message",
-                            "latency_ms",
-                            "probed_at",
-                            "owner",
-                            "asn",
-                            "as_name",
-                            "location",
-                            "ip_type",
-                            "quality",
-                            "is_proxy",
-                            "is_hosting",
-                            "is_mobile",
-                            "ip_type_reason",
-                        ]:
-                            if previous.get(key) not in (None, ""):
-                                cand[key] = previous.get(key)
+                cid = str(cand.get("id") or "")
+                if not cid or cid in seen_ids:
+                    continue
+                previous = current_by_id.get(cid)
+                if previous:
+                    # 老节点：用新数据更新动态字段，保留探测历史与富化信息
+                    for key in (
+                        "score", "ping", "speed", "sessions",
+                        "host_name", "country", "country_short",
+                        "proto", "remote_host", "remote_port",
+                        "config_text", "config_file", "fetched_at",
+                    ):
+                        if cand.get(key) not in (None, ""):
+                            previous[key] = cand[key]
+                    previous["last_seen_at"] = now
+                    merged.append(previous)
+                else:
+                    cand["first_seen_at"] = now
+                    cand["last_seen_at"] = now
                     merged.append(cand)
-                    seen_ids.add(cand["id"])
-                    
-            if len(merged) > 1000:
-                merged = merged[:1000]
-                
+                seen_ids.add(cid)
+
+            # 2) 之前拉取过但本轮未出现的老节点：保留，不删除（黑名单仍在有效期内则跳过）
+            for old in current_nodes:
+                oid = str(old.get("id") or "")
+                if not oid or oid in seen_ids:
+                    continue
+                entry = blacklist.get(oid)
+                if entry and float(entry.get("until", 0) or 0) > now:
+                    continue
+                if not old.get("last_seen_at"):
+                    old["last_seen_at"] = old.get("probed_at") or old.get("fetched_at") or 0
+                if not old.get("first_seen_at"):
+                    old["first_seen_at"] = old.get("fetched_at") or old.get("last_seen_at") or 0
+                merged.append(old)
+                seen_ids.add(oid)
+
+            # 3) 安全阀：仅在超过存储上限时按策略淘汰，正常情况不删节点
+            if len(merged) > MAX_STORED_NODES:
+                merged = prune_stored_nodes(merged, MAX_STORED_NODES)
+
             for n in merged:
-                config_path = Path(n["config_file"])
-                if not config_path.exists():
-                    try:
-                        config_path.write_text(n["config_text"], encoding="utf-8")
-                    except Exception:
-                        pass
-                        
+                try:
+                    config_path = Path(n["config_file"])
+                    config_text = n.get("config_text") or ""
+                    if config_text:
+                        existing = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+                        if existing != config_text:
+                            config_path.write_text(config_text, encoding="utf-8")
+                except Exception:
+                    pass
+
             write_json(NODES_FILE, merged)
             ip_enrichment_wakeup.set()
 
@@ -2605,7 +2675,8 @@ def maintain_valid_nodes(force: bool = False) -> str:
             log_to_json("INFO", "Main", msg)
 
             set_state(is_connecting=True, last_check_message="正在并发检测所有节点可用性...")
-            tested_results = test_multiple_nodes(to_test_ids, target_available=TARGET_VALID_NODES)
+            # 周期检测必须测完所有候选节点，不传 target_available（早停只适用于上面的快速首连阶段）
+            tested_results = test_multiple_nodes(to_test_ids)
         is_connecting = False
         
         with lock:
