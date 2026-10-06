@@ -5700,7 +5700,7 @@ INDEX_HTML = r"""<!doctype html>
   <div id="view-exits" style="display: none;">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
       <h2 style="margin: 0; font-size: 18px; font-weight: 700;">多出口管理</h2>
-      <button type="button" class="btn-primary" onclick="showExitsModal()" style="height: 38px; padding: 0 16px;">管理出口</button>
+      <button type="button" class="btn-primary" onclick="openExitsModal()" style="height: 38px; padding: 0 16px;">管理出口</button>
     </div>
     <div id="exits_inline_list" style="display: grid; gap: 12px;">
       <div style="text-align: center; color: var(--text-secondary); padding: 40px 20px; font-size: 14px;">
@@ -5713,25 +5713,25 @@ INDEX_HTML = r"""<!doctype html>
   <div id="view-profile" style="display: none;">
     <h2 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 700;">设置</h2>
     <div style="display: grid; gap: 10px;">
-      <button type="button" class="menu-item" onclick="showNetworkModal()">
+      <button type="button" class="menu-item" onclick="openNetworkModal()">
         <span>⚙️ 代理设置</span><span>›</span>
       </button>
-      <button type="button" class="menu-item" onclick="showDiagnosticsModal()">
+      <button type="button" class="menu-item" onclick="openDiagnosticsModal()">
         <span>🔍 一键诊断</span><span>›</span>
       </button>
-      <button type="button" class="menu-item" onclick="showBlacklistModal()">
+      <button type="button" class="menu-item" onclick="openBlacklistModal()">
         <span>🚫 黑名单管理</span><span>›</span>
       </button>
-      <button type="button" class="menu-item" onclick="showDailyReportModal()">
+      <button type="button" class="menu-item" onclick="openReportModal()">
         <span>📊 日报与历史</span><span>›</span>
       </button>
-      <button type="button" class="menu-item" onclick="showLogsModal()">
+      <button type="button" class="menu-item" onclick="openLogsModal()">
         <span>📝 运行日志</span><span>›</span>
       </button>
-      <button type="button" class="menu-item" onclick="showCredentialsModal()">
+      <button type="button" class="menu-item" onclick="openCredentialsModal()">
         <span>🔐 网页安全</span><span>›</span>
       </button>
-      <button type="button" class="menu-item" onclick="logout()" style="color: var(--danger);">
+      <button type="button" class="menu-item" onclick="logoutAdmin()" style="color: var(--danger);">
         <span>🚪 退出登录</span><span>›</span>
       </button>
     </div>
