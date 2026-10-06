@@ -5178,6 +5178,18 @@ INDEX_HTML = r"""<!doctype html>
       from { transform: scale(0.95); opacity: 0; }
       to { transform: scale(1); opacity: 1; }
     }
+    @media (max-width: 640px) {
+      .modal-content {
+        width: 94%;
+        padding: 20px 16px;
+        border-radius: 16px;
+        max-height: calc(100dvh - 32px);
+      }
+      .modal {
+        padding: 16px 8px;
+        align-items: flex-start;
+      }
+    }
     
     /* Inputs in settings */
     .form-group {
