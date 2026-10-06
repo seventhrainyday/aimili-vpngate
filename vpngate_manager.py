@@ -5842,7 +5842,7 @@ INDEX_HTML = r"""<!doctype html>
       <div id="network_error" role="alert" style="color: var(--danger); font-size: 13px; margin-bottom: 16px; padding: 8px 12px; background: rgba(244,63,94,0.1); border: 1px solid rgba(244,63,94,0.2); border-radius: 6px; display: none;"></div>
       <div id="network_success" role="status" aria-live="polite" style="color: var(--success); font-size: 13px; margin-bottom: 16px; padding: 8px 12px; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.2); border-radius: 6px; display: none;"></div>
 
-      <form id="network_form" onsubmit="saveNetwork(event)">
+      <form id="network_form" onsubmit="saveNetwork(event)" novalidate>
         <!-- 设置分组 Tab -->
         <div style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px;">
           <button type="button" class="settings-tab active" data-tab="proxy" onclick="switchSettingsTab('proxy')">代理</button>
