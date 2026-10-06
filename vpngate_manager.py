@@ -1650,10 +1650,10 @@ def sort_all_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     available_nodes = sorted(
         [n for n in nodes if n.get("probe_status") == "available" or n.get("active")],
         key=lambda n: (
-            0 if n.get("ip_type") in ("residential", "mobile") else 1,
             -parse_int(n.get("score")),
             -float(n.get("last_seen_at") or 0),
-            parse_int(n.get("latency_ms")) or 999999
+            parse_int(n.get("latency_ms")) or 999999,
+            0 if n.get("ip_type") in ("residential", "mobile") else 1
         )
     )
     untested_nodes = sorted(
@@ -5718,7 +5718,7 @@ function getFilteredNodes() {
 }
 
 function stableSortNodes() {
-  // 与后端 sort_all_nodes 保持一致：可用优先（住宅/移动→评分→拉取时间→延迟），然后待检测，最后不可用
+  // 与后端 sort_all_nodes 保持一致：可用优先（评分→拉取时间→延迟→住宅/移动），然后待检测，最后不可用
   const rank = n => {
     if (!n) return 3;
     if (n.active || n.probe_status === "available") return 0;
@@ -5731,15 +5731,15 @@ function stableSortNodes() {
     const ra = rank(a), rb = rank(b);
     if (ra !== rb) return ra - rb;
     if (ra === 0) {
-      // 可用：住宅/移动优先 → 高分优先 → 新拉取优先 → 低延迟优先
-      const ia = isGoodIp(a), ib = isGoodIp(b);
-      if (ia !== ib) return ia - ib;
+      // 可用：高分优先 → 新拉取优先 → 低延迟优先 → 住宅/移动优先
       const sa0 = parseInt(a.score) || 0, sb0 = parseInt(b.score) || 0;
       if (sb0 !== sa0) return sb0 - sa0;
       const ta = parseFloat(a.last_seen_at) || 0, tb = parseFloat(b.last_seen_at) || 0;
       if (tb !== ta) return tb - ta;
       const la = parseInt(a.latency_ms) || 999999, lb = parseInt(b.latency_ms) || 999999;
       if (la !== lb) return la - lb;
+      const ia = isGoodIp(a), ib = isGoodIp(b);
+      if (ia !== ib) return ia - ib;
     }
     const sa = parseInt(a.score) || 0, sb = parseInt(b.score) || 0;
     if (sb !== sa) return sb - sa;
