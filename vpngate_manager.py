@@ -540,6 +540,10 @@ def get_state() -> dict[str, Any]:
     state["proxy_bind_host"] = ui_cfg.get("proxy_bind_host", "0.0.0.0")
     state["proxy_user"] = ui_cfg.get("proxy_user", "")
     state["proxy_auth_enabled"] = bool(ui_cfg.get("proxy_user") and ui_cfg.get("proxy_password"))
+    state["notify_enabled"] = bool(ui_cfg.get("notify_enabled"))
+    state["notify_bark_url"] = ui_cfg.get("notify_bark_url", "")
+    state["notify_telegram_chat_id"] = ui_cfg.get("notify_telegram_chat_id", "")
+    state["notify_telegram_configured"] = bool(ui_cfg.get("notify_telegram_token"))
     try:
         state["extra_exits"] = get_extra_exit_status()
     except Exception:
@@ -1655,6 +1659,41 @@ def connection_ready_for_ui(state: dict[str, Any] | None = None) -> bool:
         and not current.get("is_connecting")
     )
 
+def send_notify(title: str, body: str = "") -> None:
+    """发送断线/切换通知到 Bark / Telegram（配置在 ui_config）"""
+    try:
+        ui_cfg = load_ui_config()
+        if not ui_cfg.get("notify_enabled"):
+            return
+        import urllib.request
+        import urllib.parse
+
+        # Bark: GET https://api.day.app/<key>/<title>/<body>
+        bark_url = str(ui_cfg.get("notify_bark_url") or "").strip().rstrip("/")
+        if bark_url:
+            try:
+                url = f"{bark_url}/{urllib.parse.quote(title)}/{urllib.parse.quote(body)}"
+                req = urllib.request.Request(url, method="GET")
+                urllib.request.urlopen(req, timeout=10).read()
+            except Exception as e:
+                print(f"[通知] Bark 推送失败: {e}", flush=True)
+
+        # Telegram: POST https://api.telegram.org/bot<token>/sendMessage
+        tg_token = str(ui_cfg.get("notify_telegram_token") or "").strip()
+        tg_chat = str(ui_cfg.get("notify_telegram_chat_id") or "").strip()
+        if tg_token and tg_chat:
+            try:
+                import json
+                url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+                data = json.dumps({"chat_id": tg_chat, "text": f"{title}\n{body}"}).encode()
+                req = urllib.request.Request(url, data=data, method="POST",
+                    headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=10).read()
+            except Exception as e:
+                print(f"[通知] Telegram 推送失败: {e}", flush=True)
+    except Exception as e:
+        print(f"[通知] 推送异常: {e}", flush=True)
+
 def badge_rank(node: dict[str, Any]) -> int:
     """中文徽章评级排序权重（与前端 ipScore 逻辑一致），越小越好"""
     quality = str(node.get("quality") or "")
@@ -1990,6 +2029,10 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
             node["probe_status"] = "available" if ok else "unavailable"
             node["probe_message"] = message
             node["probed_at"] = time.time()
+            # 健康度统计：累计探测次数与成功次数
+            node["health_total"] = int(node.get("health_total") or 0) + 1
+            if ok:
+                node["health_ok"] = int(node.get("health_ok") or 0) + 1
             if ok:
                 for field in IP_ENRICHMENT_FIELDS:
                     value = temp_node.get(field)
@@ -2247,6 +2290,7 @@ def auto_switch_node(attempt: int = 0) -> None:
         msg = f"当前连接已失效或代理连通性检测失败，正在自动切换至最佳备用节点: {next_node['id']}"
         print(f"[自动切换] {msg}", flush=True)
         log_to_json("INFO", "VPN", msg)
+        send_notify("🔄 VPN 自动切换", f"切换至节点: {next_node.get('name', next_node['id'])}")
         try:
             connect_node(next_node["id"])
         except Exception as e:
@@ -2260,6 +2304,7 @@ def auto_switch_node(attempt: int = 0) -> None:
             msg = f"没有可用的【{target_country}】备选节点，已断开连接，将在后台持续尝试获取新节点..."
         print(f"[自动切换] {msg}", flush=True)
         log_to_json("WARNING", "VPN", msg)
+        send_notify("⚠️ VPN 已断开", msg[:200])
         stop_active_openvpn()
         with lock:
             nodes = read_nodes()
@@ -4804,6 +4849,10 @@ INDEX_HTML = r"""<!doctype html>
           <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
           多出口管理
         </a>
+        <a href="javascript:void(0)" onclick="openBlacklistModal()">
+          <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
+          黑名单管理
+        </a>
         <a href="javascript:void(0)" onclick="openGatewayModal()">
           <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
           网关设置
@@ -5085,6 +5134,32 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>
 
+        <div style="border-top: 1px solid var(--border-color); margin: 20px 0 16px 0; padding-top: 16px;">
+          <div style="font-weight: 600; margin-bottom: 12px; font-size: 14px;">断线通知推送</div>
+          <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; cursor: pointer; font-size: 13px;">
+            <input type="checkbox" id="net_notify_enabled" style="accent-color: var(--primary);"> 启用断线/切换通知
+          </label>
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label class="form-label" for="net_bark_url">Bark 推送 URL（iOS）</label>
+            <input type="text" id="net_bark_url" class="input-field" placeholder="https://api.day.app/你的key" autocomplete="off">
+            <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">Bark App 里复制推送 URL 填入</div>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label" for="net_tg_token">Telegram Bot Token</label>
+              <input type="password" id="net_tg_token" class="input-field" placeholder="123456:ABC..." autocomplete="off">
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label" for="net_tg_chat">Telegram Chat ID</label>
+              <input type="text" id="net_tg_chat" class="input-field" placeholder="123456789" autocomplete="off">
+            </div>
+          </div>
+          <div style="margin-top: 12px;">
+            <button type="button" onclick="testNotify()" class="btn-sm" style="font-size: 12px;">发送测试通知</button>
+            <span id="notify_test_result" style="font-size: 12px; margin-left: 8px;"></span>
+          </div>
+        </div>
+
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
           <div class="form-group" style="margin-bottom: 0;">
             <label class="form-label" for="net_proxy_user">代理账号（留空则无认证）</label>
@@ -5204,6 +5279,17 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </div>
 
+
+  <!-- 黑名单管理 Modal -->
+  <div id="blacklist_modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="blacklist_modal_title" aria-hidden="true">
+    <div class="modal-content" tabindex="-1" style="max-width: 560px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h3 id="blacklist_modal_title" style="margin: 0; font-size: 18px; font-weight: 700;">黑名单管理</h3>
+        <button type="button" onclick="closeBlacklistModal()" style="background: transparent; border: none; cursor: pointer; color: var(--text-secondary); font-size: 20px;">&times;</button>
+      </div>
+      <div id="blacklist_list" style="max-height: 400px; overflow-y: auto;"></div>
+    </div>
+  </div>
 
   <!-- VPS 购买推荐 Modal -->
   <div id="vps_recommend_modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="vps_modal_title" aria-hidden="true">
@@ -5442,6 +5528,7 @@ function closeActiveModal() {
   else if (activeModalId === "gateway_modal") closeGatewayModal();
   else if (activeModalId === "logs_modal") closeLogsModal();
   else if (activeModalId === "exits_modal") closeExitsModal();
+  else if (activeModalId === "blacklist_modal") closeBlacklistModal();
 }
 document.querySelectorAll(".modal").forEach(modal => {
   modal.addEventListener("mousedown", event => {
@@ -5788,6 +5875,13 @@ function getFilteredNodes() {
     return true;
   });
 }
+
+const healthPct = n => {
+  const total = parseInt(n.health_total) || 0;
+  const ok = parseInt(n.health_ok) || 0;
+  if (total === 0) return null;
+  return Math.round(ok / total * 100);
+};
 
 const badgeRank = n => {
   // 与后端 badge_rank 一致：优质0 < 良好1 < 一般2 < 机房3 < 注意4 < 未知5
@@ -6193,8 +6287,10 @@ function render(){
         ? `<button class="test-btn" ${favoriteBusy ? "disabled" : ""} style="color: var(--warning); border-color: rgba(245, 158, 11, 0.4); padding: 0 8px; height: 30px;" onclick="toggleFavorite('${esc(n.id)}', event)">${favoriteBusy ? "处理中" : "★ 已收藏"}</button>`
         : `<button class="test-btn" ${favoriteBusy ? "disabled" : ""} style="color: var(--text-secondary); border-color: var(--border-color); padding: 0 8px; height: 30px;" onclick="toggleFavorite('${esc(n.id)}', event)">${favoriteBusy ? "处理中" : "☆ 收藏"}</button>`;
 
+      const hp = healthPct(n);
+      const healthHtml = hp === null ? "" : `<div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;" title="累计探测 ${n.health_total} 次，成功 ${n.health_ok} 次">可用率 ${hp}%</div>`;
       return `<tr ${rowClass}>
-        <td><span class="badge ${badgeClass}">${badgeText}</span></td>
+        <td><span class="badge ${badgeClass}">${badgeText}</span>${healthHtml}</td>
         <td class="mono" style="white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis;" title="${esc(n.ip||n.remote_host)}:${n.remote_port||""}">${esc(n.ip||n.remote_host)}:${n.remote_port||""}</td>
         <td style="white-space: nowrap;">${latencyText}</td>
         <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${esc(locationTitle)}">${flag ? `<span aria-hidden="true">${esc(flag)}</span> ` : ""}${esc(displayLocation)}</td>
@@ -6212,6 +6308,8 @@ function render(){
             ${testBtn}
             ${favBtn}
             ${connectBtn}
+            <button class="test-btn" style="color: var(--text-secondary); border-color: var(--border-color); padding: 0 8px; height: 30px; font-size: 12px;" onclick="blacklistNode('${esc(n.id)}')" title="加入黑名单">拉黑</button>
+            <a class="test-btn" style="color: var(--text-secondary); border-color: var(--border-color); padding: 0 8px; height: 30px; font-size: 12px; text-decoration: none; display: inline-flex; align-items: center;" href="./api/nodes/${esc(n.id)}/ovpn" download title="下载 .ovpn 配置">下载</a>
             ${(() => {
               const ip = n.ip || n.remote_host;
               if (!ip) return "";
@@ -6344,6 +6442,41 @@ function updateMainTraffic() {
     const t = state.traffic[p];
     return `↓${fmt(t.rx||0)} ↑${fmt(t.tx||0)}`;
   }).join(" · ");
+}
+
+async function blacklistNode(id) {
+  if (!confirm("确定将该节点加入黑名单吗？30天内不会再被使用。")) return;
+  try {
+    const resp = await fetchWithTimeout("./api/blacklist", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({id})
+    }, 10000);
+    const data = await resp.json();
+    if (data.ok) {
+      alert("已加入黑名单");
+      refreshNodes();
+    } else {
+      alert("失败: " + (data.error || "未知错误"));
+    }
+  } catch (e) {
+    alert("失败: " + e.message);
+  }
+}
+
+async function testNotify() {
+  const el = $("notify_test_result");
+  if (el) { el.textContent = "发送中..."; el.style.color = "var(--text-secondary)"; }
+  try {
+    const resp = await fetchWithTimeout("./api/notify_test", {method: "POST"}, 15000);
+    const data = await resp.json();
+    if (el) {
+      el.textContent = data.ok ? "✓ 已发送，请查收" : "✗ " + (data.error || "失败");
+      el.style.color = data.ok ? "#34d399" : "#f87171";
+    }
+  } catch (e) {
+    if (el) { el.textContent = "✗ " + e.message; el.style.color = "#f87171"; }
+  }
 }
 
 async function toggleFavorite(id, event) {
@@ -7030,6 +7163,11 @@ function openNetworkModal() {
     $("net_proxy_bind").value = state.proxy_bind_host || "0.0.0.0";
     $("net_proxy_user").value = state.proxy_user || "";
     $("net_proxy_password").value = "";
+    if ($("net_notify_enabled")) $("net_notify_enabled").checked = !!state.notify_enabled;
+    if ($("net_bark_url")) $("net_bark_url").value = state.notify_bark_url || "";
+    if ($("net_tg_chat")) $("net_tg_chat").value = state.notify_telegram_chat_id || "";
+    if ($("net_tg_token")) $("net_tg_token").value = "";
+    if ($("net_tg_token")) $("net_tg_token").placeholder = state.notify_telegram_configured ? "已配置（留空保持不变）" : "123456:ABC...";
     const authSt = $("net_proxy_auth_status");
     if (authSt) {
       authSt.innerHTML = state.proxy_auth_enabled
@@ -7063,6 +7201,54 @@ function openExitsModal() {
 
 function closeExitsModal() {
   hideModal("exits_modal");
+}
+
+function openBlacklistModal() {
+  showModal("blacklist_modal");
+  refreshBlacklist();
+}
+
+function closeBlacklistModal() {
+  hideModal("blacklist_modal");
+}
+
+async function refreshBlacklist() {
+  const listEl = $("blacklist_list");
+  if (!listEl) return;
+  listEl.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:20px;">加载中...</div>';
+  try {
+    const resp = await fetchWithTimeout("./api/blacklist", {}, 10000);
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || "加载失败");
+    const items = data.blacklist || [];
+    if (items.length === 0) {
+      listEl.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:20px;">黑名单为空</div>';
+      return;
+    }
+    listEl.innerHTML = items.map(b => {
+      const until = b.until ? new Date(b.until * 1000).toLocaleString("zh-CN") : "永久";
+      return `<div style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--border-color);border-radius:8px;margin-bottom:8px;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(b.name || b.id)}</div>
+          <div style="font-size:11px;color:var(--text-secondary);">${b.manual ? "手动" : "自动"}拉黑 · ${esc(b.reason || "")} · 到期 ${until}</div>
+        </div>
+        <button onclick="unblacklistNode('${esc(b.id)}')" class="btn-sm" style="font-size:12px;padding:4px 10px;flex-shrink:0;">移出</button>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    listEl.innerHTML = `<div style="text-align:center;color:#f87171;padding:20px;">${esc(e.message)}</div>`;
+  }
+}
+
+async function unblacklistNode(id) {
+  try {
+    const resp = await fetchWithTimeout("./api/blacklist/" + encodeURIComponent(id), {method: "DELETE"}, 10000);
+    const data = await resp.json();
+    if (data.ok) refreshBlacklist();
+    else alert("失败: " + (data.error || "未知错误"));
+  } catch (e) {
+    alert("失败: " + e.message);
+  }
 }
 
 function populateExitNodeSelect() {
@@ -7241,7 +7427,11 @@ async function saveNetwork(e) {
         probe_workers: probeWorkers,
         proxy_bind_host: proxyBind,
         proxy_user: proxyUser,
-        proxy_password: proxyPassword
+        proxy_password: proxyPassword,
+        notify_enabled: $("net_notify_enabled") ? $("net_notify_enabled").checked : false,
+        notify_bark_url: $("net_bark_url") ? $("net_bark_url").value.trim() : "",
+        notify_telegram_token: $("net_tg_token") ? $("net_tg_token").value.trim() : "",
+        notify_telegram_chat_id: $("net_tg_chat") ? $("net_tg_chat").value.trim() : ""
       })
     }, 25000);
     const data = await readJsonResponse(res, "保存代理设置失败");
@@ -8148,6 +8338,99 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
+        elif effective_path.startswith("/api/nodes/") and effective_path.endswith("/ovpn"):
+            # GET /api/nodes/<id>/ovpn - 下载 OpenVPN 配置文件
+            try:
+                parts = effective_path.split("/")
+                if len(parts) != 5:
+                    self.send_json({"ok": False, "error": "Invalid path"}, HTTPStatus.BAD_REQUEST)
+                    return
+                nid = parts[3]
+                nodes = read_nodes()
+                node = next((n for n in nodes if str(n.get("id")) == nid), None)
+                if not node:
+                    self.send_json({"ok": False, "error": "节点不存在"}, HTTPStatus.NOT_FOUND)
+                    return
+                config_text = node.get("config_text") or ""
+                if not config_text:
+                    # 尝试从文件读
+                    try:
+                        config_text = Path(node.get("config_file", "")).read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+                if not config_text:
+                    self.send_json({"ok": False, "error": "该节点无配置数据"}, HTTPStatus.NOT_FOUND)
+                    return
+                body = config_text.encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/x-openvpn-profile")
+                self.send_header("Content-Disposition", f'attachment; filename="{nid}.ovpn"')
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        elif effective_path == "/api/notify_test":
+            try:
+                send_notify("🔔 测试通知", "AimiliVPN 通知推送配置正常")
+                self.send_json({"ok": True, "message": "测试通知已发送"})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        elif effective_path == "/api/blacklist":
+            # GET: 列出黑名单；POST {"id": "..."}: 手动拉黑
+            try:
+                if self.command == "GET":
+                    bl = load_blacklist()
+                    nodes = read_nodes()
+                    node_map = {str(n.get("id")): n for n in nodes}
+                    out = []
+                    for nid, entry in bl.items():
+                        n = node_map.get(nid, {})
+                        out.append({
+                            "id": nid,
+                            "name": n.get("name", nid),
+                            "country": n.get("country", ""),
+                            "until": entry.get("until", 0),
+                            "manual": bool(entry.get("manual")),
+                            "reason": entry.get("reason", ""),
+                        })
+                    self.send_json({"ok": True, "blacklist": out})
+                elif self.command == "POST":
+                    payload = self.read_json_body() or {}
+                    nid = str(payload.get("id") or "").strip()
+                    if not nid:
+                        self.send_json({"ok": False, "error": "缺少节点 ID"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    bl = load_blacklist()
+                    # 手动拉黑：30天有效期
+                    bl[nid] = {"until": time.time() + 30*24*3600, "manual": True, "reason": "手动拉黑"}
+                    with lock:
+                        write_json(BLACKLIST_FILE, bl)
+                    self.send_json({"ok": True, "message": "已加入黑名单"})
+                else:
+                    self.send_json({"ok": False, "error": "Method not allowed"}, HTTPStatus.METHOD_NOT_ALLOWED)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        elif effective_path.startswith("/api/blacklist/"):
+            # DELETE /api/blacklist/<id> - 移出黑名单
+            try:
+                nid = effective_path.split("/")[-1]
+                bl = load_blacklist()
+                if nid in bl:
+                    del bl[nid]
+                    with lock:
+                        write_json(BLACKLIST_FILE, bl)
+                self.send_json({"ok": True, "message": "已移出黑名单"})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
         elif effective_path == "/api/traffic":
             # GET - 获取各代理端口流量统计
             try:
@@ -8337,6 +8620,10 @@ class Handler(BaseHTTPRequestHandler):
                 proxy_bind_host = str(payload.get("proxy_bind_host") or "").strip()
                 proxy_user = str(payload.get("proxy_user") or "").strip()
                 proxy_password = str(payload.get("proxy_password") or "")
+                notify_enabled = bool(payload.get("notify_enabled"))
+                notify_bark_url = str(payload.get("notify_bark_url") or "").strip()
+                notify_telegram_token = str(payload.get("notify_telegram_token") or "").strip()
+                notify_telegram_chat_id = str(payload.get("notify_telegram_chat_id") or "").strip()
                 
                 try:
                     new_proxy_port_int = int(new_proxy_port)
@@ -8398,6 +8685,12 @@ class Handler(BaseHTTPRequestHandler):
                 ui_cfg["proxy_bind_host"] = proxy_bind_host or "0.0.0.0"
                 ui_cfg["proxy_user"] = proxy_user
                 ui_cfg["proxy_password"] = proxy_password
+                ui_cfg["notify_enabled"] = notify_enabled
+                ui_cfg["notify_bark_url"] = notify_bark_url
+                # Token 留空则保持原值
+                if notify_telegram_token:
+                    ui_cfg["notify_telegram_token"] = notify_telegram_token
+                ui_cfg["notify_telegram_chat_id"] = notify_telegram_chat_id
                 ui_cfg["routing_mode"] = routing_mode
                 ui_cfg["force_country"] = force_country
                 ui_cfg["routing_ip_type"] = routing_ip_type
