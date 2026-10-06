@@ -211,7 +211,7 @@ def get_app_version():
 def load_ui_cfg():
     import json
     path = "/opt/aimilivpn/vpngate_data/ui_auth.json"
-    cfg = {"host": "::", "port": 8787, "secret_path": "EJsW2EeBo9lY", "password": ""}
+    cfg = {"host": "0.0.0.0", "port": 8787, "secret_path": "EJsW2EeBo9lY", "password": ""}
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -1080,7 +1080,7 @@ import sys
 
 auth_file, ui_port, secret_path, username, password = sys.argv[1:6]
 cfg = {
-    "host": "::",
+    "host": "0.0.0.0",
     "port": int(ui_port),
     "proxy_port": 7928,
     "secret_path": secret_path,

@@ -10089,14 +10089,14 @@ class Handler(BaseHTTPRequestHandler):
                     ui_cfg["auto_delete_days"] = max(0, min(365, _add))
                 except (TypeError, ValueError):
                     pass
-                # 临时禁用：排查 ARM 崩溃问题
-                # _pn = str(payload.get("panel_name") or "").strip()[:20]
-                # if _pn:
-                #     ui_cfg["panel_name"] = _pn
-                # _proc = str(payload.get("process_name") or "").strip()[:30]
-                # import re as _re
-                # _proc = _re.sub(r'[^a-zA-Z0-9_\-]', '', _proc)
-                # ui_cfg["process_name"] = _proc
+                _pn = str(payload.get("panel_name") or "").strip()[:20]
+                if _pn:
+                    ui_cfg["panel_name"] = _pn
+                _proc = str(payload.get("process_name") or "").strip()[:30]
+                # 只允许字母数字下划线横杠，防止注入
+                import re as _re
+                _proc = _re.sub(r'[^a-zA-Z0-9_\-]', '', _proc)
+                ui_cfg["process_name"] = _proc
                 # Token 留空则保持原值
                 if notify_telegram_token:
                     ui_cfg["notify_telegram_token"] = notify_telegram_token
