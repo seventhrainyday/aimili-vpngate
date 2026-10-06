@@ -161,6 +161,8 @@ STATE_FILE = DATA_DIR / "state.json"
 AUTH_FILE = DATA_DIR / "vpngate_auth.txt"
 UPSTREAM_PROXY_AUTH_FILE = DATA_DIR / "upstream_proxy_auth.txt"
 BLACKLIST_FILE = DATA_DIR / "blacklist.json"
+CONN_HISTORY_FILE = DATA_DIR / "connection_history.json"
+DAILY_STATS_FILE = DATA_DIR / "daily_stats.json"
 API_CACHE_FILE = DATA_DIR / "api_snapshot.csv"
 API_CACHE_META_FILE = DATA_DIR / "api_snapshot.meta.json"
 BUNDLED_SNAPSHOT_FILE = ROOT_DIR / "mirror" / "vpngate.csv"
@@ -544,6 +546,7 @@ def get_state() -> dict[str, Any]:
     state["notify_bark_url"] = ui_cfg.get("notify_bark_url", "")
     state["notify_telegram_chat_id"] = ui_cfg.get("notify_telegram_chat_id", "")
     state["notify_telegram_configured"] = bool(ui_cfg.get("notify_telegram_token"))
+    state["daily_report_time"] = ui_cfg.get("daily_report_time", "23:59")
     try:
         state["extra_exits"] = get_extra_exit_status()
     except Exception:
@@ -1620,6 +1623,17 @@ def cleanup_policy_routing() -> None:
 
 def stop_active_openvpn() -> None:
     global active_openvpn_process, active_openvpn_node_id
+    # 记录断开事件（在清空前）
+    _disc_node_id = active_openvpn_node_id
+    _disc_node_name = ""
+    if _disc_node_id:
+        try:
+            _nodes = read_nodes()
+            _n = next((x for x in _nodes if x.get("id") == _disc_node_id), None)
+            if _n:
+                _disc_node_name = _n.get("name", "")
+        except Exception:
+            pass
     with lock:
         cleanup_policy_routing()
         config_to_delete = None
@@ -1637,6 +1651,14 @@ def stop_active_openvpn() -> None:
         except Exception:
             pass
         
+        if _disc_node_id:
+            log_connection_event("disconnect", _disc_node_id, _disc_node_name, "连接断开")
+            # 结算该节点流量（主出口端口）
+            try:
+                _mp = int(load_ui_config().get("proxy_port", 7928))
+            except Exception:
+                _mp = 7928
+            settle_node_traffic(_disc_node_id, _mp)
         if config_to_delete:
             try:
                 path = Path(config_to_delete)
@@ -1693,6 +1715,166 @@ def send_notify(title: str, body: str = "") -> None:
                 print(f"[通知] Telegram 推送失败: {e}", flush=True)
     except Exception as e:
         print(f"[通知] 推送异常: {e}", flush=True)
+
+def log_connection_event(event_type: str, node_id: str = "", node_name: str = "", reason: str = "") -> None:
+    """记录连接事件：connect / disconnect / switch"""
+    try:
+        history = read_json(CONN_HISTORY_FILE, [])
+        if not isinstance(history, list):
+            history = []
+        history.append({
+            "ts": time.time(),
+            "type": event_type,
+            "node_id": node_id,
+            "node_name": node_name,
+            "reason": reason,
+        })
+        # 只保留最近 500 条
+        history = history[-500:]
+        with lock:
+            write_json(CONN_HISTORY_FILE, history)
+    except Exception as e:
+        print(f"[历史] 记录连接事件失败: {e}", flush=True)
+
+def settle_node_traffic(node_id: str, port: int = 7928) -> None:
+    """节点切换时，把该端口累计流量结算到节点名下（按天）"""
+    if not node_id:
+        return
+    try:
+        stats = proxy_server.get_traffic_stats()
+        cur = stats.get(port, {})
+        rx, tx = cur.get("rx", 0), cur.get("tx", 0)
+        if rx == 0 and tx == 0:
+            return
+        # 读取上次结算的基线
+        daily = read_json(DAILY_STATS_FILE, {})
+        if not isinstance(daily, dict):
+            daily = {}
+        today = time.strftime("%Y-%m-%d", time.localtime())
+        day_data = daily.get(today, {})
+        if not isinstance(day_data, dict):
+            day_data = {}
+        baseline_key = f"_baseline_{port}"
+        baseline = day_data.get(baseline_key, {"rx": 0, "tx": 0})
+        delta_rx = max(0, rx - baseline.get("rx", 0))
+        delta_tx = max(0, tx - baseline.get("tx", 0))
+        if delta_rx > 0 or delta_tx > 0:
+            node_entry = day_data.get(node_id, {"rx": 0, "tx": 0, "name": ""})
+            node_entry["rx"] = node_entry.get("rx", 0) + delta_rx
+            node_entry["tx"] = node_entry.get("tx", 0) + delta_tx
+            # 补节点名
+            if not node_entry.get("name"):
+                try:
+                    n = next((x for x in read_nodes() if x.get("id") == node_id), None)
+                    if n:
+                        node_entry["name"] = n.get("name", node_id)
+                except Exception:
+                    pass
+            day_data[node_id] = node_entry
+        # 更新基线
+        day_data[baseline_key] = {"rx": rx, "tx": tx}
+        daily[today] = day_data
+        with lock:
+            write_json(DAILY_STATS_FILE, daily)
+    except Exception as e:
+        print(f"[流量] 结算失败: {e}", flush=True)
+
+def generate_daily_report(date_str: str = "") -> dict[str, Any]:
+    """生成指定日期的日报（默认今天）"""
+    if not date_str:
+        date_str = time.strftime("%Y-%m-%d", time.localtime())
+    daily = read_json(DAILY_STATS_FILE, {})
+    day_data = daily.get(date_str, {}) if isinstance(daily, dict) else {}
+
+    # 节点流量（排除基线 key）
+    node_traffic = []
+    total_rx = total_tx = 0
+    for nid, v in day_data.items():
+        if nid.startswith("_baseline_") or not isinstance(v, dict):
+            continue
+        rx, tx = v.get("rx", 0), v.get("tx", 0)
+        total_rx += rx
+        total_tx += tx
+        node_traffic.append({
+            "node_id": nid,
+            "name": v.get("name", nid),
+            "rx": rx, "tx": tx, "total": rx + tx,
+        })
+    node_traffic.sort(key=lambda x: x["total"], reverse=True)
+
+    # 当天连接事件
+    history = read_json(CONN_HISTORY_FILE, [])
+    day_start = time.mktime(time.strptime(date_str, "%Y-%m-%d"))
+    day_end = day_start + 86400
+    day_events = [e for e in history if isinstance(e, dict) and day_start <= e.get("ts", 0) < day_end]
+    switch_count = sum(1 for e in day_events if e.get("type") == "switch")
+    connect_count = sum(1 for e in day_events if e.get("type") == "connect")
+    disconnect_count = sum(1 for e in day_events if e.get("type") == "disconnect")
+
+    def fmt(b):
+        if b < 1024: return f"{b} B"
+        if b < 1024**2: return f"{b/1024:.1f} KB"
+        if b < 1024**2: return f"{b/1024:.1f} KB"
+        if b < 1024**3: return f"{b/1024**2:.1f} MB"
+        return f"{b/1024**3:.2f} GB"
+
+    return {
+        "date": date_str,
+        "switch_count": switch_count,
+        "connect_count": connect_count,
+        "disconnect_count": disconnect_count,
+        "total_rx": total_rx, "total_tx": total_tx, "total": total_rx + total_tx,
+        "total_h": fmt(total_rx + total_tx),
+        "total_rx_h": fmt(total_rx), "total_tx_h": fmt(total_tx),
+        "node_traffic": node_traffic,
+        "events": sorted(day_events, key=lambda x: x.get("ts", 0)),
+    }
+
+def format_daily_report_text(report: dict[str, Any]) -> str:
+    """日报文本（用于 TG 推送）"""
+    lines = [
+        f"📊 AimiliVPN 日报 {report['date']}",
+        f"切换次数: {report['switch_count']} 次",
+        f"连接/断开: {report['connect_count']}/{report['disconnect_count']}",
+        f"总流量: {report['total_h']} (↓{report['total_rx_h']} ↑{report['total_tx_h']})",
+        "",
+        "各节点流量:",
+    ]
+    for nt in report["node_traffic"][:10]:
+        _t = nt["total"]
+        total_h = f"{_t/1024/1024:.1f}MB" if _t < 1024**3 else f"{_t/1024**3:.2f}GB"
+        lines.append(f"  • {nt['name'][:30]}: {total_h}")
+    if not report["node_traffic"]:
+        lines.append("  （无流量记录）")
+    return "\n".join(lines)
+
+_daily_report_sent = set()  # 已推送的日期
+
+def daily_report_loop() -> None:
+    """日报定时推送：每天指定时间推送到 TG/Bark"""
+    print("[日报] 定时推送线程启动", flush=True)
+    while True:
+        try:
+            time.sleep(60)
+            ui_cfg = load_ui_config()
+            if not ui_cfg.get("notify_enabled"):
+                continue
+            # 推送时间配置，默认 23:59
+            report_time = str(ui_cfg.get("daily_report_time") or "23:59").strip()
+            now = time.localtime()
+            cur_hm = f"{now.tm_hour:02d}:{now.tm_min:02d}"
+            today = time.strftime("%Y-%m-%d", now)
+            if cur_hm == report_time and today not in _daily_report_sent:
+                _daily_report_sent.add(today)
+                # 推送昨天的完整日报（今天还没结束）
+                import datetime
+                yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+                report = generate_daily_report(yesterday)
+                text = format_daily_report_text(report)
+                send_notify("📊 AimiliVPN 日报", text)
+                print(f"[日报] 已推送 {yesterday} 的日报", flush=True)
+        except Exception as e:
+            print(f"[日报] 异常: {e}", flush=True)
 
 def badge_rank(node: dict[str, Any]) -> int:
     """中文徽章评级排序权重（与前端 ipScore 逻辑一致），越小越好"""
@@ -2740,6 +2922,9 @@ def connect_node(node_id: str) -> str:
         # 有前任活动节点才算一次切换（首次连接不算）
         if previous_node_id and previous_node_id != node_id:
             _updates["switch_count_today"] = int(_st.get("switch_count_today") or 0) + 1
+            log_connection_event("switch", node_id, node.get("name", ""), f"从 {previous_node_id} 切换")
+        elif not previous_node_id:
+            log_connection_event("connect", node_id, node.get("name", ""), "建立连接")
         set_state(**_updates)
         
         set_state(active_node_latency="配置路由", last_check_message="正在配置策略路由规则与流量转发...")
@@ -4962,6 +5147,10 @@ INDEX_HTML = r"""<!doctype html>
           <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
           黑名单管理
         </a>
+        <a href="javascript:void(0)" onclick="openReportModal()">
+          <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+          日报与历史
+        </a>
         <a href="javascript:void(0)" onclick="openGatewayModal()">
           <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
           网关设置
@@ -5264,6 +5453,10 @@ INDEX_HTML = r"""<!doctype html>
             </div>
           </div>
           <div style="margin-top: 12px;">
+            <div class="form-group" style="margin-bottom: 8px;">
+              <label class="form-label" for="net_daily_report_time">日报推送时间（每天推送昨日日报）</label>
+              <input type="time" id="net_daily_report_time" class="input-field" value="23:59" style="width: 150px;">
+            </div>
             <button type="button" onclick="testNotify()" class="btn-sm" style="font-size: 12px;">发送测试通知</button>
             <span id="notify_test_result" style="font-size: 12px; margin-left: 8px;"></span>
           </div>
@@ -5457,6 +5650,23 @@ INDEX_HTML = r"""<!doctype html>
         <button type="button" onclick="closeBlacklistModal()" style="background: transparent; border: none; cursor: pointer; color: var(--text-secondary); font-size: 20px;">&times;</button>
       </div>
       <div id="blacklist_list" style="max-height: 400px; overflow-y: auto;"></div>
+    </div>
+  </div>
+
+  <!-- 日报与历史 Modal -->
+  <div id="report_modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="report_modal_title" aria-hidden="true">
+    <div class="modal-content" tabindex="-1" style="max-width: 640px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 id="report_modal_title" style="margin: 0; font-size: 18px; font-weight: 700;">日报与连接历史</h3>
+        <button type="button" onclick="closeReportModal()" style="background: transparent; border: none; cursor: pointer; font-size: 20px; color: var(--text-secondary);">&times;</button>
+      </div>
+      <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+        <button onclick="showReportTab('daily')" id="tab_daily" class="btn-sm btn-primary">今日日报</button>
+        <button onclick="showReportTab('history')" id="tab_history" class="btn-sm">连接历史</button>
+        <input type="date" id="report_date" class="input-field" style="margin-left: auto; width: 150px; height: 30px; font-size: 12px;" onchange="loadDailyReport()">
+      </div>
+      <div id="report_daily" style="max-height: 450px; overflow-y: auto;"></div>
+      <div id="report_history" style="max-height: 450px; overflow-y: auto; display: none;"></div>
     </div>
   </div>
 
@@ -7337,6 +7547,7 @@ function openNetworkModal() {
     if ($("net_tg_chat")) $("net_tg_chat").value = state.notify_telegram_chat_id || "";
     if ($("net_tg_token")) $("net_tg_token").value = "";
     if ($("net_tg_token")) $("net_tg_token").placeholder = state.notify_telegram_configured ? "已配置（留空保持不变）" : "123456:ABC...";
+    if ($("net_daily_report_time")) $("net_daily_report_time").value = state.daily_report_time || "23:59";
     const authSt = $("net_proxy_auth_status");
     if (authSt) {
       authSt.innerHTML = state.proxy_auth_enabled
@@ -7370,6 +7581,107 @@ function openExitsModal() {
 
 function closeExitsModal() {
   hideModal("exits_modal");
+}
+
+function openReportModal() {
+  const today = new Date().toISOString().slice(0, 10);
+  $("report_date").value = today;
+  showReportTab("daily");
+  loadDailyReport();
+  openModal("report_modal");
+}
+function closeReportModal() { closeModal("report_modal"); }
+
+function showReportTab(tab) {
+  $("report_daily").style.display = tab === "daily" ? "" : "none";
+  $("report_history").style.display = tab === "history" ? "" : "none";
+  $("tab_daily").className = tab === "daily" ? "btn-sm btn-primary" : "btn-sm";
+  $("tab_history").className = tab === "history" ? "btn-sm btn-primary" : "btn-sm";
+  if (tab === "history") loadConnHistory();
+}
+
+function fmtBytes(b) {
+  if (b < 1024) return b + " B";
+  if (b < 1048576) return (b/1024).toFixed(1) + " KB";
+  if (b < 1073741824) return (b/1048576).toFixed(1) + " MB";
+  return (b/1073741824).toFixed(2) + " GB";
+}
+
+async function loadDailyReport() {
+  const date = $("report_date").value;
+  const el = $("report_daily");
+  el.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:20px;">加载中...</div>';
+  try {
+    const resp = await fetchWithTimeout(`/shi/api/daily_report?date=${date}`);
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || "加载失败");
+    const r = data.report;
+    let html = `
+      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px;">
+        <div style="text-align: center; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 8px;">
+          <div style="font-size: 20px; font-weight: 700;">${r.switch_count}</div>
+          <div style="font-size: 11px; color: var(--text-secondary);">切换次数</div>
+        </div>
+        <div style="text-align: center; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 8px;">
+          <div style="font-size: 20px; font-weight: 700;">${r.connect_count}</div>
+          <div style="font-size: 11px; color: var(--text-secondary);">连接</div>
+        </div>
+        <div style="text-align: center; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 8px;">
+          <div style="font-size: 20px; font-weight: 700;">${r.disconnect_count}</div>
+          <div style="font-size: 11px; color: var(--text-secondary);">断开</div>
+        </div>
+        <div style="text-align: center; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 8px;">
+          <div style="font-size: 20px; font-weight: 700;">${r.total_h}</div>
+          <div style="font-size: 11px; color: var(--text-secondary);">总流量</div>
+        </div>
+      </div>
+      <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 8px;">↓ ${r.total_rx_h} &nbsp; ↑ ${r.total_tx_h}</div>
+      <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px;">各节点流量</div>
+    `;
+    if (r.node_traffic.length === 0) {
+      html += '<div style="color: var(--text-secondary); font-size: 12px;">暂无流量记录</div>';
+    } else {
+      html += r.node_traffic.map(nt => `
+        <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border-color); font-size: 13px;">
+          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70%;">${esc(nt.name)}</span>
+          <span style="color: var(--text-secondary);">${fmtBytes(nt.total)}</span>
+        </div>`).join("");
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<div style="color: #f87171; padding: 20px; text-align: center;">${esc(e.message)}</div>`;
+  }
+}
+
+async function loadConnHistory() {
+  const el = $("report_history");
+  el.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:20px;">加载中...</div>';
+  try {
+    const resp = await fetchWithTimeout("/shi/api/conn_history");
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || "加载失败");
+    const typeIcon = {connect: "🟢", disconnect: "🔴", switch: "🔄"};
+    const typeName = {connect: "连接", disconnect: "断开", switch: "切换"};
+    if (data.history.length === 0) {
+      el.innerHTML = '<div style="color: var(--text-secondary); font-size: 12px; text-align: center; padding: 20px;">暂无记录</div>';
+      return;
+    }
+    el.innerHTML = data.history.map(h => {
+      const d = new Date(h.ts * 1000);
+      const tstr = d.toLocaleString("zh-CN", {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"});
+      return `
+      <div style="display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border-color); font-size: 13px;">
+        <span style="flex-shrink: 0;">${typeIcon[h.type] || "•"}</span>
+        <div style="flex: 1; min-width: 0;">
+          <div><strong>${typeName[h.type] || h.type}</strong> ${esc(h.node_name || h.node_id || "")}</div>
+          ${h.reason ? `<div style="font-size: 11px; color: var(--text-secondary);">${esc(h.reason)}</div>` : ""}
+        </div>
+        <span style="font-size: 11px; color: var(--text-secondary); flex-shrink: 0;">${tstr}</span>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    el.innerHTML = `<div style="color: #f87171; padding: 20px; text-align: center;">${esc(e.message)}</div>`;
+  }
 }
 
 function openBlacklistModal() {
@@ -7691,7 +8003,8 @@ async function saveNetwork(e) {
         notify_enabled: $("net_notify_enabled") ? $("net_notify_enabled").checked : false,
         notify_bark_url: $("net_bark_url") ? $("net_bark_url").value.trim() : "",
         notify_telegram_token: $("net_tg_token") ? $("net_tg_token").value.trim() : "",
-        notify_telegram_chat_id: $("net_tg_chat") ? $("net_tg_chat").value.trim() : ""
+        notify_telegram_chat_id: $("net_tg_chat") ? $("net_tg_chat").value.trim() : "",
+        daily_report_time: $("net_daily_report_time") ? $("net_daily_report_time").value : "23:59"
       })
     }, 25000);
     const data = await readJsonResponse(res, "保存代理设置失败");
@@ -8632,6 +8945,28 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
+        elif effective_path == "/api/daily_report":
+            try:
+                from urllib.parse import urlparse, parse_qs
+                qs = parse_qs(urlparse(self.path).query)
+                date_str = (qs.get("date") or [""])[0].strip()
+                report = generate_daily_report(date_str)
+                self.send_json({"ok": True, "report": report})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        elif effective_path == "/api/conn_history":
+            try:
+                history = read_json(CONN_HISTORY_FILE, [])
+                if not isinstance(history, list):
+                    history = []
+                # 最近 100 条，倒序
+                self.send_json({"ok": True, "history": history[-100:][::-1]})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
         elif effective_path == "/api/notify_test":
             try:
                 send_notify("🔔 测试通知", "AimiliVPN 通知推送配置正常")
@@ -9033,6 +9368,14 @@ class Handler(BaseHTTPRequestHandler):
                 ui_cfg["proxy_password"] = proxy_password
                 ui_cfg["notify_enabled"] = notify_enabled
                 ui_cfg["notify_bark_url"] = notify_bark_url
+                _drt = str(payload.get("daily_report_time") or "23:59").strip()
+                # 简单校验 HH:MM
+                try:
+                    _h, _m = _drt.split(":")
+                    assert 0 <= int(_h) <= 23 and 0 <= int(_m) <= 59
+                    ui_cfg["daily_report_time"] = f"{int(_h):02d}:{int(_m):02d}"
+                except Exception:
+                    pass
                 # Token 留空则保持原值
                 if notify_telegram_token:
                     ui_cfg["notify_telegram_token"] = notify_telegram_token
@@ -9396,6 +9739,8 @@ def main() -> None:
             exit_monitor_loop()
         except Exception as e:
             print(f"[多出口] 监控循环异常退出: {e}", flush=True)
+    # 日报定时推送线程
+    threading.Thread(target=daily_report_loop, daemon=True).start()
     threading.Thread(target=_sync_exits_delayed, daemon=True).start()
 
     # Wait for the gateway to officially start
