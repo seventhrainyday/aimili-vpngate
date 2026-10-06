@@ -1638,6 +1638,7 @@ def sort_all_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         [n for n in nodes if n.get("probe_status") == "available" or n.get("active")],
         key=lambda n: (
             0 if n.get("ip_type") in ("residential", "mobile") else 1,
+            -float(n.get("last_seen_at") or 0),
             parse_int(n.get("latency_ms")) or 999999,
             -parse_int(n.get("score"))
         )
@@ -2574,10 +2575,17 @@ def maintain_valid_nodes(force: bool = False) -> str:
                         if cand.get(key) not in (None, ""):
                             previous[key] = cand[key]
                     previous["last_seen_at"] = now
+                    # 拉取历史：记录每次出现的时间戳，最多保留 20 条
+                    hist = previous.get("seen_history")
+                    if not isinstance(hist, list):
+                        hist = []
+                    hist.append(now)
+                    previous["seen_history"] = hist[-20:]
                     merged.append(previous)
                 else:
                     cand["first_seen_at"] = now
                     cand["last_seen_at"] = now
+                    cand["seen_history"] = [now]
                     merged.append(cand)
                 seen_ids.add(cid)
 
@@ -4727,6 +4735,7 @@ INDEX_HTML = r"""<!doctype html>
             <th>运营主体 / ISP</th>
             <th style="width: 110px;">IP 类型</th>
             <th style="width: 80px;">评分</th>
+            <th style="width: 85px;" title="最近一次从 VPNGate 拉取到该节点的时间">拉取时间</th>
             <th style="width: 280px;">操作</th>
           </tr>
         </thead>
@@ -5201,6 +5210,26 @@ const ipScore = n => {
   return {label: "未知", cls: "score-unknown", title: "暂无 IP 分类数据，点击外链手动查询"};
 };
 
+// 相对时间：几秒前/几分钟前/几小时前/几天前
+const timeAgo = ts => {
+  const t = parseFloat(ts) || 0;
+  if (t <= 0) return "-";
+  const diff = Date.now() / 1000 - t;
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`;
+  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}天前`;
+  const d = new Date(t * 1000);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+};
+const formatDateTime = ts => {
+  const t = parseFloat(ts) || 0;
+  if (t <= 0) return "-";
+  const d = new Date(t * 1000);
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
 // 三个 IP 检测站的外链模板
 const IP_CHECK_SITES = [
   {name: "Lark", title: "去 iplark.com 查此 IP", url: ip => `https://iplark.com/${encodeURIComponent(ip)}`},
@@ -5580,6 +5609,7 @@ function renderNodeCards(list, activeNodeRef) {
         <span>${lat}</span>
         <span>${flag ? esc(flag) + " " : ""}${esc(loc)}</span>
         <span>${esc(translateIpType(n.ip_type))}</span>
+        <span title="最近拉取：${esc(formatDateTime(n.last_seen_at))}">🕐 ${esc(timeAgo(n.last_seen_at))}</span>
       </div>
       <div class="node-card-actions">
         <button class="test-btn" data-node-id="${esc(n.id)}" ${isTesting ? "disabled" : ""} onclick="testNode(this, '${esc(n.id)}', event)">${isTesting ? "检测中" : "检测"}</button>
@@ -5763,7 +5793,7 @@ function render(){
   // Render table rows
   let rowsHtml = "";
   if (currentPageNodes.length === 0) {
-    rowsHtml = `<tr><td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</td></tr>`;
+    rowsHtml = `<tr><td colspan="9" style="text-align: center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</td></tr>`;
   } else {
     rowsHtml = currentPageNodes.map(n=>{
       if (!n) return '';
@@ -5808,6 +5838,12 @@ function render(){
         <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${esc(n.owner||n.as_name||"-")}">${esc(n.owner||n.as_name||"-")}</td>
         <td style="white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis;" title="${esc(ipTypeTitle)}">${esc(translateIpType(n.ip_type))}</td>
         <td style="white-space: nowrap;">${(() => { const s = ipScore(n); return `<span class="badge ${s.cls}" title="${esc(s.title)}">${esc(s.label)}</span>`; })()}</td>
+        <td style="white-space: nowrap; font-size: 12px; color: var(--text-secondary);" title="${(() => {
+          const first = formatDateTime(n.first_seen_at);
+          const last = formatDateTime(n.last_seen_at);
+          const hist = Array.isArray(n.seen_history) ? n.seen_history.length : 0;
+          return `首次发现：${first}\n最近拉取：${last}\n累计出现：${hist} 次`;
+        })()}">${esc(timeAgo(n.last_seen_at))}</td>
         <td>
           <div class="table-actions">
             ${testBtn}
