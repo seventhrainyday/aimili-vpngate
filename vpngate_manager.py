@@ -4852,6 +4852,16 @@ INDEX_HTML = r"""<!doctype html>
         <div class="stat-label">今日切换次数</div>
       </div>
     </div>
+    <div class="stat-card" style="--accent: #34d399; cursor: pointer;" onclick="runSpeedTest()" title="点击测速">
+      <div class="stat-icon">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+      </div>
+      <div class="stat-body">
+        <div class="stat-value" id="stat_speed">-</div>
+        <div class="stat-label">下载速度 <span style="font-size: 10px; opacity: 0.7;">(点击测速)</span></div>
+        <div class="stat-label" id="stat_traffic" style="font-size: 11px; margin-top: 2px;" title="代理流量统计"></div>
+      </div>
+    </div>
   </div>
   
     <!-- 当前连接活动节点卡片 -->
@@ -6090,7 +6100,8 @@ function render(){
         pIpVal.textContent = state.proxy_ip || "-";
         const latencyClass = getLatencyClass(state.proxy_latency_ms);
         pLatVal.innerHTML = `<span class="latency-val ${latencyClass}" style="margin-left:8px;">${state.proxy_latency_ms} ms</span>`;
-        // 流量统计
+        // 流量统计（弹窗 + 主页面卡片）
+        updateMainTraffic();
         const tEl = $("traffic_val");
         if (tEl && state.traffic) {
           const ports = Object.keys(state.traffic);
@@ -6277,30 +6288,55 @@ async function testNode(btn, id, event){
 async function runSpeedTest() {
   const btn = $("btn_speedtest");
   const resultEl = $("speedtest_result");
-  if (!btn || !resultEl) return;
-  btn.disabled = true;
-  btn.style.opacity = "0.5";
-  resultEl.textContent = "测速中...";
-  resultEl.style.color = "var(--text-secondary)";
+  const statSpeed = $("stat_speed");
+  // 主页面卡片 + 弹窗结果区都要更新
+  if (statSpeed) statSpeed.innerHTML = '<small style="font-size:12px;">测速中...</small>';
+  if (resultEl) {
+    resultEl.textContent = "测速中...";
+    resultEl.style.color = "var(--text-secondary)";
+  }
+  if (btn) { btn.disabled = true; btn.style.opacity = "0.5"; }
   try {
     const resp = await fetchWithTimeout("./api/speedtest", {method: "POST"}, 40000);
     const data = await resp.json();
     if (data.ok) {
-      resultEl.textContent = `↓ ${data.speed_mbps} Mbps`;
-      resultEl.style.color = "#34d399";
-      resultEl.title = `下载速度 ${data.speed_mbps} Mbps (${data.speed_kbps} KB/s)`;
+      const txt = `${data.speed_mbps} <small>Mbps</small>`;
+      if (statSpeed) statSpeed.innerHTML = txt;
+      if (resultEl) {
+        resultEl.textContent = `↓ ${data.speed_mbps} Mbps`;
+        resultEl.style.color = "#34d399";
+        resultEl.title = `下载速度 ${data.speed_mbps} Mbps (${data.speed_kbps} KB/s)`;
+      }
     } else {
-      resultEl.textContent = "测速失败";
-      resultEl.style.color = "#f87171";
-      resultEl.title = data.error || "未知错误";
+      if (statSpeed) statSpeed.innerHTML = '<small style="font-size:12px;color:#f87171;">失败</small>';
+      if (resultEl) {
+        resultEl.textContent = "测速失败";
+        resultEl.style.color = "#f87171";
+        resultEl.title = data.error || "未知错误";
+      }
     }
   } catch (e) {
-    resultEl.textContent = "测速超时";
-    resultEl.style.color = "#f87171";
+    if (statSpeed) statSpeed.innerHTML = '<small style="font-size:12px;color:#f87171;">超时</small>';
+    if (resultEl) {
+      resultEl.textContent = "测速超时";
+      resultEl.style.color = "#f87171";
+    }
   } finally {
-    btn.disabled = false;
-    btn.style.opacity = "1";
+    if (btn) { btn.disabled = false; btn.style.opacity = "1"; }
   }
+}
+
+// 主页面流量统计更新
+function updateMainTraffic() {
+  const tEl = $("stat_traffic");
+  if (!tEl || !state.traffic) return;
+  const ports = Object.keys(state.traffic);
+  if (ports.length === 0) { tEl.textContent = ""; return; }
+  const fmt = b => b < 1024 ? b + "B" : b < 1048576 ? (b/1024).toFixed(1) + "K" : b < 1073741824 ? (b/1048576).toFixed(1) + "M" : (b/1073741824).toFixed(2) + "G";
+  tEl.textContent = ports.map(p => {
+    const t = state.traffic[p];
+    return `↓${fmt(t.rx||0)} ↑${fmt(t.tx||0)}`;
+  }).join(" · ");
 }
 
 async function toggleFavorite(id, event) {
