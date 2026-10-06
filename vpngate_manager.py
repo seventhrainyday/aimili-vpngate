@@ -7584,7 +7584,8 @@ function closeExitsModal() {
 }
 
 function openReportModal() {
-  const today = new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const today = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
   $("report_date").value = today;
   showReportTab("daily");
   loadDailyReport();
@@ -7612,7 +7613,7 @@ async function loadDailyReport() {
   const el = $("report_daily");
   el.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:20px;">加载中...</div>';
   try {
-    const resp = await fetchWithTimeout(`/shi/api/daily_report?date=${date}`);
+    const resp = await fetchWithTimeout(`./api/daily_report?date=${date}`);
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error || "加载失败");
     const r = data.report;
@@ -7657,7 +7658,7 @@ async function loadConnHistory() {
   const el = $("report_history");
   el.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:20px;">加载中...</div>';
   try {
-    const resp = await fetchWithTimeout("/shi/api/conn_history");
+    const resp = await fetchWithTimeout("./api/conn_history");
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error || "加载失败");
     const typeIcon = {connect: "🟢", disconnect: "🔴", switch: "🔄"};
@@ -7781,7 +7782,7 @@ async function saveExitEdit() {
   }
   errEl.style.display = "none";
   try {
-    const resp = await fetchWithTimeout(`/shi/api/exits/${eid}`, {
+    const resp = await fetchWithTimeout(`./api/exits/${eid}`, {
       method: "PUT",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
@@ -7866,7 +7867,7 @@ async function addExit() {
     return;
   }
   try {
-    const resp = await fetchWithTimeout("/shi/api/exits", {
+    const resp = await fetchWithTimeout("./api/exits", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
@@ -7891,7 +7892,7 @@ async function addExit() {
 
 async function exitAction(exitId, action) {
   try {
-    const resp = await fetchWithTimeout(`/shi/api/exits/${exitId}/${action}`, {method: "POST"});
+    const resp = await fetchWithTimeout(`./api/exits/${exitId}/${action}`, {method: "POST"});
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error || "操作失败");
     if (data.exits) state.extra_exits = data.exits;
@@ -7903,7 +7904,7 @@ async function exitAction(exitId, action) {
 
 async function toggleExit(exitId, enabled) {
   try {
-    const resp = await fetchWithTimeout(`/shi/api/exits/${exitId}/toggle`, {
+    const resp = await fetchWithTimeout(`./api/exits/${exitId}/toggle`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({enabled})
