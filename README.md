@@ -12,6 +12,11 @@
 
 [快速安装](#quick-install) · [完整安装](#installation) · [连接使用](#connection) · [服务商推荐](#vps) · [社区入口](#community) · [法律声明](#legal)
 
+> **Fork 说明**：本分支基于上游 `OpenMili/aimili-vpngate` 修改，包含以下修复（上游未合并）：
+> - 节点检测加速：周期检测不再找到 3 个可用节点就停，改为测完所有节点；并发从 5 提到 10；新增 TCP 端口 3 秒预检，死节点跳过 12 秒 OpenVPN 握手等待
+> - 节点累积存储：拉取新节点时不再清空老节点，改为累积模式（记录 `first_seen_at` / `last_seen_at`）；仅在超过 1000 个时按策略淘汰
+> - 本分支安装链接已指向本 fork，无需额外打补丁
+
 [![项目网站](https://img.shields.io/badge/项目网站-339936.xyz-f97316?style=for-the-badge)](https://339936.xyz)
 [![Telegram](https://img.shields.io/badge/Telegram-交流群-229ED9?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/arestemple)
 [![YouTube](https://img.shields.io/badge/YouTube-视频教程-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=s-ATfXR8BpI)
@@ -48,7 +53,7 @@ AimiliVPN 使用 Python 标准库管理 VPNGate 节点，提供节点获取与�
 使用 `root` 用户在受支持的 Linux VPS 上执行：
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/seventhrainyday/aimili-vpngate/probe-and-accumulate-fix/install.sh)
 ```
 
 安装完成后，终端会显示 Web 后台完整地址、随机安全路径、登录账号和密码。输入 `ml` 可打开管理菜单。
@@ -56,7 +61,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 无人值守安装可显式跳过首次参数询问，并自动生成安全路径和登录凭据：
 
 ```bash
-AIMILIVPN_NONINTERACTIVE=1 bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/main/install.sh)
+AIMILIVPN_NONINTERACTIVE=1 bash <(curl -Ls https://raw.githubusercontent.com/seventhrainyday/aimili-vpngate/probe-and-accumulate-fix/install.sh)
 ```
 
 > [!TIP]
@@ -74,7 +79,7 @@ AIMILIVPN_NONINTERACTIVE=1 bash <(curl -Ls https://raw.githubusercontent.com/bao
 ### 方式一：一键源码安装
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/seventhrainyday/aimili-vpngate/probe-and-accumulate-fix/install.sh)
 ```
 
 安装器会部署到 `/opt/aimilivpn` 并注册系统服务。常用命令：
@@ -92,7 +97,7 @@ ml uninstall       # 卸载
 需要先审查脚本时：
 
 ```bash
-git clone --branch main --single-branch https://github.com/baoweise-bot/aimili-vpngate.git
+git clone --branch probe-and-accumulate-fix --single-branch https://github.com/seventhrainyday/aimili-vpngate.git
 cd aimili-vpngate
 sudo bash install.sh
 ```
@@ -104,7 +109,7 @@ sudo bash install.sh
 Docker 主机需要 `/dev/net/tun`、host 网络以及 `NET_ADMIN`、`NET_RAW` 权限。
 
 ```bash
-git clone --branch main --single-branch https://github.com/baoweise-bot/aimili-vpngate.git
+git clone --branch probe-and-accumulate-fix --single-branch https://github.com/seventhrainyday/aimili-vpngate.git
 cd aimili-vpngate
 docker compose pull
 docker compose up -d
@@ -145,7 +150,7 @@ docker run -d \
 <summary><strong>无法拉取 GHCR 时在 VPS 本地构建</strong></summary>
 
 ```bash
-git clone --branch main --single-branch https://github.com/baoweise-bot/aimili-vpngate.git
+git clone --branch probe-and-accumulate-fix --single-branch https://github.com/seventhrainyday/aimili-vpngate.git
 cd aimili-vpngate
 docker compose build
 docker compose up -d

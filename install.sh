@@ -47,8 +47,8 @@ echo -e "${BLUE}        欢迎使用 AimiliVPN 一键源码部署与管理脚本
 echo -e "${BLUE}==========================================================${PLAIN}"
 
 # 3. Configure GitHub Repository URL
-# Default to the official repository (baoweise-bot/aimili-vpngate)
-DEFAULT_USER="baoweise-bot"
+# Fork 默认指向本 fork 的修复分支（seventhrainyday/aimili-vpngate）
+DEFAULT_USER="seventhrainyday"
 DEFAULT_REPO="aimili-vpngate"
 
 # Allow custom repository override via command line arguments
@@ -82,7 +82,7 @@ fi
 
 # 4. Clone or pull the repository
 INSTALL_DIR="/opt/aimilivpn"
-DEPLOY_BRANCH="main"
+DEPLOY_BRANCH="${3:-probe-and-accumulate-fix}"
 
 echo -e "\n${YELLOW}[2/4] 正在从 GitHub 部署源代码到 ${INSTALL_DIR} (目标分支: ${DEPLOY_BRANCH})...${PLAIN}"
 if [ -f "${INSTALL_DIR}/.local_dev" ]; then
@@ -522,7 +522,7 @@ def show_logs():
         time.sleep(2)
 
 def update_service():
-    print("正在从 GitHub main 主分支检测正式版更新...", flush=True)
+    print("正在从 GitHub 检测更新...", flush=True)
     if os.path.exists(INSTALL_DIR):
         try:
             os.chdir(INSTALL_DIR)
@@ -530,8 +530,12 @@ def update_service():
                 print("错误: 当前安装目录不是 Git 仓库，无法通过 Git 更新。")
                 time.sleep(3)
                 return
-            
-            branch = "main"
+
+            # 跟随当前检出分支（fork 修复分支 / 上游 main 均可）
+            branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True,
+            ).stdout.strip() or "main"
             subprocess.run(
                 ["git", "fetch", "origin", branch],
                 check=True,
@@ -556,7 +560,7 @@ def update_service():
                     time.sleep(1.5)
                     return
             
-            print(f"\n正在切换并重置到正式版 origin/{branch} ...", flush=True)
+            print(f"\n正在切换并重置到 origin/{branch} ...", flush=True)
             subprocess.run(["git", "checkout", "-B", branch, f"origin/{branch}"], check=True)
             subprocess.run(["git", "reset", "--hard", f"origin/{branch}"], check=True)
             

@@ -4250,9 +4250,9 @@ INDEX_HTML = r"""<!doctype html>
           <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H18.5" /></svg>
           检测更新
         </button>
-        <a href="https://github.com/baoweise-bot/aimili-vpngate/tree/main" target="_blank" rel="noopener noreferrer">GitHub main 主分支</a>
-        <a id="latest_release_link" href="https://github.com/baoweise-bot/aimili-vpngate/releases/latest" target="_blank" rel="noopener noreferrer">下载最新正式版</a>
-        <div id="update_check_status" class="update-check-status" role="status" aria-live="polite">点击“检测更新”查询 GitHub 最新正式版。</div>
+        <a href="https://github.com/seventhrainyday/aimili-vpngate/tree/probe-and-accumulate-fix" target="_blank" rel="noopener noreferrer">GitHub 修复分支</a>
+        <a id="latest_release_link" href="https://github.com/seventhrainyday/aimili-vpngate/tree/probe-and-accumulate-fix" target="_blank" rel="noopener noreferrer">下载最新修复版</a>
+        <div id="update_check_status" class="update-check-status" role="status" aria-live="polite">点击“检测更新”查询 GitHub 最新版本。</div>
       </div>
     </div>
     <a href="https://t.me/arestemple" target="_blank" rel="noopener noreferrer" class="btn-telegram">
