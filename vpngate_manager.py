@@ -1646,12 +1646,33 @@ def connection_ready_for_ui(state: dict[str, Any] | None = None) -> bool:
         and not current.get("is_connecting")
     )
 
+def badge_rank(node: dict[str, Any]) -> int:
+    """中文徽章评级排序权重（与前端 ipScore 逻辑一致），越小越好"""
+    quality = str(node.get("quality") or "")
+    ip_type = str(node.get("ip_type") or "")
+    is_proxy = bool(node.get("is_proxy"))
+    if quality == "proxy" or is_proxy:
+        return 4  # 注意
+    has_data = bool(quality or ip_type)
+    if not has_data:
+        return 5  # 未知
+    if quality == "datacenter" or ip_type == "hosting":
+        return 3  # 机房
+    if quality == "mobile" or ip_type == "mobile":
+        return 0  # 优质
+    if ip_type == "residential":
+        return 1  # 良好
+    if quality == "normal":
+        return 2  # 一般
+    return 5  # 未知
+
 def sort_all_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     available_nodes = sorted(
         [n for n in nodes if n.get("probe_status") == "available" or n.get("active")],
         key=lambda n: (
-            -parse_int(n.get("score")),
+            badge_rank(n),
             -float(n.get("last_seen_at") or 0),
+            -parse_int(n.get("score")),
             parse_int(n.get("latency_ms")) or 999999,
             0 if n.get("ip_type") in ("residential", "mobile") else 1
         )
@@ -5717,8 +5738,22 @@ function getFilteredNodes() {
   });
 }
 
+const badgeRank = n => {
+  // 与后端 badge_rank 一致：优质0 < 良好1 < 一般2 < 机房3 < 注意4 < 未知5
+  const quality = n.quality || "";
+  const ipType = n.ip_type || "";
+  const isProxy = Boolean(n.is_proxy);
+  if (quality === "proxy" || isProxy) return 4;
+  if (!quality && !ipType) return 5;
+  if (quality === "datacenter" || ipType === "hosting") return 3;
+  if (quality === "mobile" || ipType === "mobile") return 0;
+  if (ipType === "residential") return 1;
+  if (quality === "normal") return 2;
+  return 5;
+};
+
 function stableSortNodes() {
-  // 与后端 sort_all_nodes 保持一致：可用优先（评分→拉取时间→延迟→住宅/移动），然后待检测，最后不可用
+  // 与后端 sort_all_nodes 保持一致：可用优先（徽章→拉取时间→评分→延迟→住宅/移动），然后待检测，最后不可用
   const rank = n => {
     if (!n) return 3;
     if (n.active || n.probe_status === "available") return 0;
@@ -5731,11 +5766,13 @@ function stableSortNodes() {
     const ra = rank(a), rb = rank(b);
     if (ra !== rb) return ra - rb;
     if (ra === 0) {
-      // 可用：高分优先 → 新拉取优先 → 低延迟优先 → 住宅/移动优先
-      const sa0 = parseInt(a.score) || 0, sb0 = parseInt(b.score) || 0;
-      if (sb0 !== sa0) return sb0 - sa0;
+      // 可用：徽章评级优先 → 新拉取优先 → 高分优先 → 低延迟优先 → 住宅/移动优先
+      const ba = badgeRank(a), bb = badgeRank(b);
+      if (ba !== bb) return ba - bb;
       const ta = parseFloat(a.last_seen_at) || 0, tb = parseFloat(b.last_seen_at) || 0;
       if (tb !== ta) return tb - ta;
+      const sa0 = parseInt(a.score) || 0, sb0 = parseInt(b.score) || 0;
+      if (sb0 !== sa0) return sb0 - sa0;
       const la = parseInt(a.latency_ms) || 999999, lb = parseInt(b.latency_ms) || 999999;
       if (la !== lb) return la - lb;
       const ia = isGoodIp(a), ib = isGoodIp(b);
