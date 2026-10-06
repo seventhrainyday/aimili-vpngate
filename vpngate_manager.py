@@ -5431,7 +5431,7 @@ function stableSortNodes() {
 
 // ===== 视图切换：表格 / 卡片 =====
 let nodeViewMode = "table";
-function setNodeView(mode) {
+async function setNodeView(mode) {
   nodeViewMode = mode;
   const tb = $("view_table_btn"), cb = $("view_card_btn");
   if (tb) tb.classList.toggle("active", mode === "table");
@@ -5441,26 +5441,33 @@ function setNodeView(mode) {
   if (tableWrap) tableWrap.style.display = mode === "table" ? "" : "none";
   if (grid) grid.style.display = mode === "card" ? "" : "none";
   try { localStorage.setItem("aimili_node_view", mode); } catch (e) {}
-  render();
-  // 兜底：确保卡片视图有数据（防止 render 流程异常时空白）
+
   if (mode === "card") {
+    // 卡片视图：先确保有数据，再渲染（不依赖 render 的中间状态）
     try {
+      if (!Array.isArray(nodes) || nodes.length === 0) {
+        const data = await fetchNodesSnapshot();
+        // 直接赋值，不经过 applyNodesSnapshot 的签名去重（确保本次一定更新）
+        if (data && Array.isArray(data.nodes) && data.nodes.length > 0) {
+          nodes = data.nodes;
+          if (data.state) state = data.state;
+          stableSortNodes();
+          updateCountryFilter();
+        }
+      }
+      const shown = getFilteredNodes();
+      const totalPages = Math.ceil(shown.length / pageSize) || 1;
+      if (currentPage > totalPages) currentPage = totalPages;
+      if (currentPage < 1) currentPage = 1;
+      const startIndex = (currentPage - 1) * pageSize;
+      const endIndex = Math.min(startIndex + pageSize, shown.length);
+      currentPageNodes = shown.slice(startIndex, endIndex);
       renderNodeCards(currentPageNodes);
     } catch (e) {
-      console.error("[setNodeView] 兜底渲染失败:", e);
-    }
-    // 如果总数据是空的，主动重新拉取一次
-    if ((!Array.isArray(nodes) || nodes.length === 0) && !window._cardViewRefetching) {
-      window._cardViewRefetching = true;
-      fetchNodesSnapshot().then(d => {
-        applyNodesSnapshot(d);
-      }).catch(e => {
-        console.error("[setNodeView] 重新拉取失败:", e);
-      }).finally(() => {
-        window._cardViewRefetching = false;
-      });
+      console.error("[setNodeView] 卡片渲染失败:", e);
     }
   }
+  render();
 }
 (function restoreNodeView(){
   try {
@@ -5510,10 +5517,11 @@ setInterval(() => {
 }, 1000);
 
 // ===== 节点卡片视图渲染 =====
-function renderNodeCards(list) {
+function renderNodeCards(list, activeNodeRef) {
   const grid = $("nodes_grid");
   if (!grid) return;
-  console.log("[renderNodeCards] 收到节点数:", list ? list.length : "null", "viewMode:", typeof nodeViewMode !== "undefined" ? nodeViewMode : "undef");
+  // activeNode 是 render() 的局部变量，这里自己找，避免 ReferenceError
+  const active = activeNodeRef || (Array.isArray(nodes) ? nodes.find(n => n && n.active) : null);
   if (!list || list.length === 0) {
     const totalNodes = Array.isArray(nodes) ? nodes.length : "n/a";
     const vm = typeof nodeViewMode !== "undefined" ? nodeViewMode : "undef";
@@ -5525,7 +5533,7 @@ function renderNodeCards(list) {
   }
   grid.innerHTML = list.map(n => {
     if (!n) return "";
-    const isActive = activeNode && n.id === activeNode.id;
+    const isActive = active && n.id === active.id;
     const isPending = Boolean(state.is_connecting && state.pending_node_id === n.id);
     const badgeClass = isActive ? "available" : (isPending ? "testing" : (n.probe_status || "not_checked"));
     const badgeText = isActive ? "已连接" : (isPending ? "切换中" : translateStatus(n.probe_status));
