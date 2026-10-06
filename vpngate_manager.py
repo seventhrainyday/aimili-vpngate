@@ -338,6 +338,7 @@ def load_ui_config() -> dict[str, Any]:
             "discovery_countries": [],
             "check_interval_minutes": 21,
             "probe_workers": 10,
+            "auto_delete_days": 7,
             "proxy_bind_host": "0.0.0.0",
             "proxy_user": "",
             "proxy_password": "",
@@ -549,6 +550,7 @@ def get_state() -> dict[str, Any]:
     state["daily_report_time"] = ui_cfg.get("daily_report_time", "23:59")
     state["auto_speedtest"] = bool(ui_cfg.get("auto_speedtest", False))
     state["speedtest_threshold_mbps"] = float(ui_cfg.get("speedtest_threshold_mbps") or 1.0)
+    state["auto_delete_days"] = int(ui_cfg.get("auto_delete_days", 7))
     try:
         state["extra_exits"] = get_extra_exit_status()
     except Exception:
@@ -2242,6 +2244,8 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
             node["probe_status"] = "available" if ok else "unavailable"
             node["probe_message"] = message
             node["probed_at"] = time.time()
+            if ok:
+                node["last_available_at"] = time.time()
             # 健康度统计：累计探测次数与成功次数
             node["health_total"] = int(node.get("health_total") or 0) + 1
             if ok:
@@ -3466,9 +3470,41 @@ def maintain_valid_nodes(force: bool = False) -> str:
                         if available_candidates:
                             auto_switch_node()
 
+        # 长期不可用自动删除
+        try:
+            _add = int(load_ui_config().get("auto_delete_days", 7) or 0)
+        except Exception:
+            _add = 7
+        _deleted = 0
+        if _add > 0:
+            _now = time.time()
+            _cutoff = _add * 86400
+            _active_id = str(active_openvpn_node_id or "")
+            _kept = []
+            for _n in merged:
+                _nid = str(_n.get("id") or "")
+                if _nid and _nid == _active_id:
+                    _kept.append(_n)
+                    continue
+                _last_ok = float(_n.get("last_available_at") or 0)
+                if _last_ok <= 0:
+                    _last_ok = float(_n.get("first_seen_at") or _n.get("fetched_at") or 0)
+                if _last_ok <= 0:
+                    _kept.append(_n)
+                    continue
+                if _now - _last_ok > _cutoff:
+                    _deleted += 1
+                    log_to_json("INFO", "自动删除", f"节点 {_n.get('name', _nid)} 连续 {_add} 天不可用，已删除")
+                else:
+                    _kept.append(_n)
+            if _deleted:
+                merged = _kept
+                write_json(NODES_FILE, merged)
         valid_nodes_count = len([n for n in merged if n.get("probe_status") == "available"])
         total_tested = len(fast_results) + len(tested_results)
         message = f"Fetched {len(candidates)} nodes. Tested {total_tested} prioritized non-active nodes."
+        if _deleted:
+            message += f" Auto-deleted {_deleted} stale nodes."
         set_state(
             last_check_at=time.time(),
             last_check_message=message,
@@ -5773,6 +5809,15 @@ INDEX_HTML = r"""<!doctype html>
               <span style="font-size: 12px; color: var(--text-secondary);">Mbps（低于此值自动切换）</span>
             </div>
           </div>
+
+          <div class="form-group" style="margin-top: 16px;">
+            <label class="form-label">长期不可用自动删除</label>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span style="font-size: 12px; color: var(--text-secondary); white-space: nowrap;">连续</span>
+              <input type="number" id="net_auto_delete_days" class="input-field" min="0" max="365" step="1" value="7" style="width: 70px; flex-shrink: 0;">
+              <span style="font-size: 12px; color: var(--text-secondary);">天不可用自动删除（0 表示不删除）</span>
+            </div>
+          </div>
         </div>
         
         <div style="display: flex; gap: 12px; justify-content: flex-end;">
@@ -7821,6 +7866,7 @@ function openNetworkModal() {
     if ($("net_daily_report_time")) $("net_daily_report_time").value = state.daily_report_time || "23:59";
     if ($("net_auto_speedtest")) $("net_auto_speedtest").checked = !!state.auto_speedtest;
     if ($("net_speedtest_threshold")) $("net_speedtest_threshold").value = state.speedtest_threshold_mbps || 1.0;
+    if ($("net_auto_delete_days")) $("net_auto_delete_days").value = state.auto_delete_days ?? 7;
     const authSt = $("net_proxy_auth_status");
     if (authSt) {
       authSt.innerHTML = state.proxy_auth_enabled
@@ -8311,6 +8357,7 @@ async function saveNetwork(e) {
         notify_telegram_chat_id: $("net_tg_chat") ? $("net_tg_chat").value.trim() : "",
         daily_report_time: $("net_daily_report_time") ? $("net_daily_report_time").value : "23:59",
         auto_speedtest: $("net_auto_speedtest") ? $("net_auto_speedtest").checked : false,
+        auto_delete_days: $("net_auto_delete_days") ? parseInt($("net_auto_delete_days").value || "7", 10) : 7,
         speedtest_threshold_mbps: $("net_speedtest_threshold") ? parseFloat($("net_speedtest_threshold").value) || 1.0 : 1.0
       })
     }, 25000);
@@ -9716,6 +9763,11 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     _thr = float(payload.get("speedtest_threshold_mbps") or 1.0)
                     ui_cfg["speedtest_threshold_mbps"] = max(0.1, min(100, _thr))
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    _add = int(payload.get("auto_delete_days", 7))
+                    ui_cfg["auto_delete_days"] = max(0, min(365, _add))
                 except (TypeError, ValueError):
                     pass
                 # Token 留空则保持原值
