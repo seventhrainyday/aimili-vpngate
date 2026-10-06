@@ -3576,6 +3576,12 @@ LOGIN_HTML = r"""<!DOCTYPE html>
   </div>
 
   <script>
+    function apiBase() {
+      const p = window.location.pathname;
+      const m = p.match(/^\/([^\/]+)\//);
+      return m ? "/" + m[1] : "";
+    }
+    function apiUrl(path) { return apiBase() + path; }
     function fetchWithTimeout(resource, options = {}, timeoutMs = 20000) {
       if (typeof AbortController === "undefined") return fetch(resource, options);
       const controller = new AbortController();
@@ -3599,7 +3605,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
       submitBtn.querySelector("span").textContent = "正在验证...";
       
       try {
-        const response = await fetchWithTimeout("./api/login", {
+        const response = await fetchWithTimeout(apiUrl("/api/login"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username: uname, password: pwd })
@@ -6749,7 +6755,7 @@ async function testNode(btn, id, event){
   render();
   
   try {
-    const response = await fetchWithTimeout("./api/test_node", {
+    const response = await fetchWithTimeout(apiUrl("/api/test_node"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id })
@@ -6781,7 +6787,7 @@ async function runSpeedTest() {
   }
   if (btn) { btn.disabled = true; btn.style.opacity = "0.5"; }
   try {
-    const resp = await fetchWithTimeout("./api/speedtest", {method: "POST"}, 40000);
+    const resp = await fetchWithTimeout(apiUrl("/api/speedtest"), {method: "POST"}, 40000);
     const data = await resp.json();
     if (data.ok) {
       const txt = `${data.speed_mbps} <small>Mbps</small>`;
@@ -6826,7 +6832,7 @@ function updateMainTraffic() {
 async function blacklistNode(id) {
   if (!confirm("确定将该节点加入黑名单吗？30天内不会再被使用。")) return;
   try {
-    const resp = await fetchWithTimeout("./api/blacklist", {
+    const resp = await fetchWithTimeout(apiUrl("/api/blacklist"), {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({id})
@@ -6847,7 +6853,7 @@ async function testNotify() {
   const el = $("notify_test_result");
   if (el) { el.textContent = "发送中..."; el.style.color = "var(--text-secondary)"; }
   try {
-    const resp = await fetchWithTimeout("./api/notify_test", {method: "POST"}, 15000);
+    const resp = await fetchWithTimeout(apiUrl("/api/notify_test"), {method: "POST"}, 15000);
     const data = await resp.json();
     if (el) {
       el.textContent = data.ok ? "✓ 已发送，请查收" : "✗ " + (data.error || "失败");
@@ -6864,7 +6870,7 @@ async function toggleFavorite(id, event) {
   favoriteRequestIds.add(id);
   render();
   try {
-    const response = await fetchWithTimeout("./api/toggle_favorite", {
+    const response = await fetchWithTimeout(apiUrl("/api/toggle_favorite"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id })
@@ -6892,7 +6898,7 @@ let nodesRequestPromise = null;
 async function fetchNodesSnapshot() {
   if (nodesRequestPromise) return nodesRequestPromise;
   const request = (async () => {
-    const response = await fetchWithTimeout("./api/nodes", { cache: "no-store" }, 20000);
+    const response = await fetchWithTimeout(apiUrl("/api/nodes"), { cache: "no-store" }, 20000);
     if (!response.ok) throw new Error(`节点状态请求失败 (${response.status})`);
     return response.json();
   })();
@@ -6977,7 +6983,7 @@ function startConnectionPolling() {
         clearInterval(pollInterval);
         pollInterval = null;
         try {
-          await fetchWithTimeout("./api/test_proxy", { method: "POST" }, 45000);
+          await fetchWithTimeout(apiUrl("/api/test_proxy"), { method: "POST" }, 45000);
         } catch(pe){}
         load();
       }
@@ -6999,7 +7005,7 @@ async function connectNode(id){
   render();
   
   try {
-    const request = fetchWithTimeout("./api/connect",{
+    const request = fetchWithTimeout(apiUrl("/api/connect"),{
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({id})
@@ -7042,11 +7048,11 @@ async function disconnectNode(){
   disconnectInFlight = true;
   render();
   try {
-    const response = await fetchWithTimeout("./api/disconnect", { method: "POST" }, 60000);
+    const response = await fetchWithTimeout(apiUrl("/api/disconnect"), { method: "POST" }, 60000);
     const result = await readJsonResponse(response, "断开连接失败");
     if (result.ok) {
       try {
-        await fetchWithTimeout("./api/test_proxy", { method: "POST" }, 45000);
+        await fetchWithTimeout(apiUrl("/api/test_proxy"), { method: "POST" }, 45000);
       } catch(pe){}
       load();
     } else {
@@ -7094,7 +7100,7 @@ $("status_filter").onchange=()=>{ currentPage = 1; render(); };
 $("refresh").onclick=async()=>{
   refreshButtonBusy("正在启动更新...");
   try{
-    const response = await fetchWithTimeout("./api/refresh_nodes",{
+    const response = await fetchWithTimeout(apiUrl("/api/refresh_nodes"),{
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
@@ -7131,7 +7137,7 @@ $("btn_test_proxy").onclick = async () => {
   latVal.textContent = "";
   
   try {
-    const response = await fetchWithTimeout("./api/test_proxy", { method: "POST" }, 45000);
+    const response = await fetchWithTimeout(apiUrl("/api/test_proxy"), { method: "POST" }, 45000);
     const result = await readJsonResponse(response, "代理检测失败");
     if (result.ok) {
       badge.className = "badge available";
@@ -7174,7 +7180,7 @@ async function checkForUpdate(event) {
   statusBox.className = "update-check-status";
   statusBox.textContent = "正在连接 GitHub 检查最新正式版...";
   try {
-    const response = await fetchWithTimeout("./api/check_update", { cache: "no-store" }, 25000);
+    const response = await fetchWithTimeout(apiUrl("/api/check_update"), { cache: "no-store" }, 25000);
     const result = await readJsonResponse(response, "更新检查失败");
     if (!response.ok || !result.ok) {
       throw new Error(result.error || "更新检查失败");
@@ -7295,7 +7301,7 @@ async function toggleFavRouting() {
   updateFavPanelUI();
   
   try {
-    const res = await fetchWithTimeout("./api/update_routing", {
+    const res = await fetchWithTimeout(apiUrl("/api/update_routing"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -7482,7 +7488,7 @@ async function saveCredentials(e) {
   submitBtn.textContent = "正在保存...";
   
   try {
-    const res = await fetchWithTimeout("./api/update_credentials", {
+    const res = await fetchWithTimeout(apiUrl("/api/update_credentials"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -7613,7 +7619,7 @@ async function loadDailyReport() {
   const el = $("report_daily");
   el.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:20px;">加载中...</div>';
   try {
-    const resp = await fetchWithTimeout(`./api/daily_report?date=${date}`);
+    const resp = await fetchWithTimeout(apiUrl(`/api/daily_report?date=${date}`));
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error || "加载失败");
     const r = data.report;
@@ -7658,7 +7664,7 @@ async function loadConnHistory() {
   const el = $("report_history");
   el.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:20px;">加载中...</div>';
   try {
-    const resp = await fetchWithTimeout("./api/conn_history");
+    const resp = await fetchWithTimeout(apiUrl("/api/conn_history"));
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error || "加载失败");
     const typeIcon = {connect: "🟢", disconnect: "🔴", switch: "🔄"};
@@ -7699,7 +7705,7 @@ async function refreshBlacklist() {
   if (!listEl) return;
   listEl.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:20px;">加载中...</div>';
   try {
-    const resp = await fetchWithTimeout("./api/blacklist", {}, 10000);
+    const resp = await fetchWithTimeout(apiUrl("/api/blacklist"), {}, 10000);
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error || "加载失败");
     const items = data.blacklist || [];
@@ -7782,7 +7788,7 @@ async function saveExitEdit() {
   }
   errEl.style.display = "none";
   try {
-    const resp = await fetchWithTimeout(`./api/exits/${eid}`, {
+    const resp = await fetchWithTimeout(apiUrl(`/api/exits/${eid}`), {
       method: "PUT",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
@@ -7867,7 +7873,7 @@ async function addExit() {
     return;
   }
   try {
-    const resp = await fetchWithTimeout("./api/exits", {
+    const resp = await fetchWithTimeout(apiUrl("/api/exits"), {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
@@ -7892,7 +7898,7 @@ async function addExit() {
 
 async function exitAction(exitId, action) {
   try {
-    const resp = await fetchWithTimeout(`./api/exits/${exitId}/${action}`, {method: "POST"});
+    const resp = await fetchWithTimeout(apiUrl(`/api/exits/${exitId}/${action}`), {method: "POST"});
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error || "操作失败");
     if (data.exits) state.extra_exits = data.exits;
@@ -7904,7 +7910,7 @@ async function exitAction(exitId, action) {
 
 async function toggleExit(exitId, enabled) {
   try {
-    const resp = await fetchWithTimeout(`./api/exits/${exitId}/toggle`, {
+    const resp = await fetchWithTimeout(apiUrl(`/api/exits/${exitId}/toggle`), {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({enabled})
@@ -7988,7 +7994,7 @@ async function saveNetwork(e) {
   submitBtn.textContent = "正在保存...";
   
   try {
-    const res = await fetchWithTimeout("./api/update_settings", {
+    const res = await fetchWithTimeout(apiUrl("/api/update_settings"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -8054,7 +8060,7 @@ function closeVpsModal() {
 
 async function logoutAdmin() {
   try {
-    const res = await fetchWithTimeout("./api/logout", { method: "POST" }, 20000);
+    const res = await fetchWithTimeout(apiUrl("/api/logout"), { method: "POST" }, 20000);
     if (res.ok) {
       window.location.reload();
     } else {
@@ -8107,7 +8113,7 @@ async function loadGatewayStatus() {
   if (gatewayRequestInFlight || !isPageVisible() || $("gateway_modal").style.display !== "flex") return;
   gatewayRequestInFlight = true;
   try {
-    const res = await fetchWithTimeout("./api/gateway_status", { cache: "no-store" }, 20000);
+    const res = await fetchWithTimeout(apiUrl("/api/gateway_status"), { cache: "no-store" }, 20000);
     if (!res.ok) throw new Error(`网关状态请求失败 (${res.status})`);
     const data = await res.json();
     if (data.ok && data.services) {
@@ -8173,7 +8179,7 @@ async function loadLogs() {
   if (logsRequestInFlight || !isPageVisible() || $("logs_modal").style.display !== "flex") return;
   logsRequestInFlight = true;
   try {
-    const res = await fetchWithTimeout("./api/logs", { cache: "no-store" }, 20000);
+    const res = await fetchWithTimeout(apiUrl("/api/logs"), { cache: "no-store" }, 20000);
     if (!res.ok) throw new Error(`日志请求失败 (${res.status})`);
     const data = await res.json();
     if (Array.isArray(data.logs)) {
