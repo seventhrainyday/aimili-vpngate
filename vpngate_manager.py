@@ -5504,7 +5504,12 @@ function renderNodeCards(list) {
   if (!grid) return;
   console.log("[renderNodeCards] 收到节点数:", list ? list.length : "null", "viewMode:", typeof nodeViewMode !== "undefined" ? nodeViewMode : "undef");
   if (!list || list.length === 0) {
-    grid.innerHTML = `<div style="grid-column: 1/-1; text-align:center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</div>`;
+    const totalNodes = Array.isArray(nodes) ? nodes.length : "n/a";
+    const vm = typeof nodeViewMode !== "undefined" ? nodeViewMode : "undef";
+    grid.innerHTML = `<div style="grid-column: 1/-1; text-align:center; color: var(--text-secondary); padding: 40px 0;">
+      未找到符合过滤条件的备选节点。
+      <div style="font-size:11px; opacity:0.6; margin-top:8px;">[调试] 传入:${list ? list.length : "null"} / 总节点:${totalNodes} / 视图:${vm} / 页:${typeof currentPage !== "undefined" ? currentPage : "?"}</div>
+    </div>`;
     return;
   }
   grid.innerHTML = list.map(n => {
