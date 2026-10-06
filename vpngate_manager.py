@@ -3753,8 +3753,17 @@ LOGIN_HTML = r"""<!DOCTYPE html>
     function drawTrafficChart() {
       const cv = $("traffic_chart");
       if (!cv) return;
+      // 高清屏适配
+      const dpr = window.devicePixelRatio || 1;
+      const rectW = cv.clientWidth || 600;
+      const rectH = cv.clientHeight || 90;
+      if (cv.width !== rectW * dpr) {
+        cv.width = rectW * dpr;
+        cv.height = rectH * dpr;
+      }
       const ctx = cv.getContext("2d");
-      const W = cv.width, H = cv.height;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const W = rectW, H = rectH;
       ctx.clearRect(0, 0, W, H);
       const all = _trafficHist.rx.concat(_trafficHist.tx);
       const maxV = Math.max(1, ...all);
@@ -3789,6 +3798,8 @@ LOGIN_HTML = r"""<!DOCTYPE html>
           drawTrafficChart();
           const lbl = $("stat_traffic");
           if (lbl) lbl.textContent = `↓${fmtRate(r.rx_rate)} ↑${fmtRate(r.tx_rate)}`;
+          const rateText = $("traffic_rate_text");
+          if (rateText) rateText.textContent = `↓ ${fmtRate(r.rx_rate)}   ↑ ${fmtRate(r.tx_rate)}`;
         }
       } catch (e) { /* 静默 */ }
     }
@@ -5402,8 +5413,22 @@ INDEX_HTML = r"""<!doctype html>
         <div class="stat-value" id="stat_speed">-</div>
         <div class="stat-label">下载速度 <span style="font-size: 10px; opacity: 0.7;">(点击测速)</span></div>
         <div class="stat-label" id="stat_traffic" style="font-size: 11px; margin-top: 2px;" title="代理流量统计"></div>
-        <canvas id="traffic_chart" width="220" height="44" style="width: 100%; height: 44px; margin-top: 4px;"></canvas>
       </div>
+    </div>
+  </div>
+
+  <!-- 实时流量曲线卡片 -->
+  <div class="stat-card" style="--accent: #34d399; margin-bottom: 16px; cursor: default;">
+    <div class="stat-icon">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/></svg>
+    </div>
+    <div class="stat-body" style="flex: 1;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <span class="stat-label">实时流量</span>
+        <span style="font-size: 11px; color: var(--text-secondary);"><span style="color: #34d399;">●</span> 下载 <span style="color: #f59e0b;">●</span> 上传</span>
+      </div>
+      <canvas id="traffic_chart" width="600" height="90" style="width: 100%; height: 90px; display: block;"></canvas>
+      <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;" id="traffic_rate_text">等待数据...</div>
     </div>
   </div>
   
@@ -5730,12 +5755,12 @@ INDEX_HTML = r"""<!doctype html>
 
           <div class="form-group" style="margin-top: 16px;">
             <label class="form-label">连接后自动测速</label>
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; margin-bottom: 8px;">
-              <input type="checkbox" id="net_auto_speedtest" style="accent-color: var(--primary);"> 启用（连上后自动测速，不达标自动换节点）
+            <label style="display: block; font-size: 13px; cursor: pointer; margin-bottom: 10px; line-height: 1.6;">
+              <input type="checkbox" id="net_auto_speedtest" style="accent-color: var(--primary); vertical-align: middle; margin-right: 6px;">启用（连上后自动测速，不达标自动换节点）
             </label>
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <span style="font-size: 12px; color: var(--text-secondary);">速度阈值</span>
-              <input type="number" id="net_speedtest_threshold" class="input-field" min="0.1" max="100" step="0.1" value="1.0" style="width: 100px;">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span style="font-size: 12px; color: var(--text-secondary); white-space: nowrap;">速度阈值</span>
+              <input type="number" id="net_speedtest_threshold" class="input-field" min="0.1" max="100" step="0.1" value="1.0" style="width: 80px; flex-shrink: 0;">
               <span style="font-size: 12px; color: var(--text-secondary);">Mbps（低于此值自动切换）</span>
             </div>
           </div>
