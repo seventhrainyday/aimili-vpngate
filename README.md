@@ -57,6 +57,12 @@
 ## 更新日志
 
 ### 2026-10-07
+- `7bfad44` NAT 兼容：响应加 `Connection: close`，避免复用连接被 NAT 网关掐掉
+- `d990e77` Alpine/musl 兼容：显式设置线程栈 8MB，避免请求线程栈溢出
+- `0ab139d` ARM 兼容：`send_bytes` 加 `wfile.flush()`，`HTTPServer` 加 `daemon_threads`
+- `2f70eb8` 代理设置表单加 `novalidate`：彻底禁用浏览器原生验证
+- `5873df4` 修复代理设置保存点不了：去掉隐藏 tab 中必填字段的 `required` 属性
+- `e2db19f` 修复：代理账号密码移回代理 tab（误放在通知 tab）
 - `d732ece` 修复测试通知：force 绕过 notify_enabled 检查，未启用也能测试
 - `a113f50` 修复一键诊断 DNS 检查：改用 reverse/isp 字段，不再显示"未知"
 - `fe22096` 修复底部导航按钮函数名：showXModal → openXModal
