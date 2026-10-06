@@ -511,6 +511,9 @@ def get_state() -> dict[str, Any]:
     state.setdefault("last_fetch_status", "not_started")
     state.setdefault("last_check_message", "")
     state.setdefault("pending_node_id", "")
+    state.setdefault("connected_since", 0)
+    state.setdefault("switch_count_today", 0)
+    state.setdefault("switch_count_date", "")
     state.setdefault("tunnel_ready", False)
     state.setdefault("proxy_ready", bool(state.get("proxy_ok", False)))
     state.setdefault("blacklisted_nodes", 0)
@@ -552,6 +555,7 @@ def clear_active_connection_state(message: str) -> None:
         active_openvpn_node_id="",
         is_connecting=False,
         pending_node_id="",
+        connected_since=0,
         active_node_latency="无活动连接",
         proxy_ok=False,
         tunnel_ready=False,
@@ -1598,6 +1602,10 @@ def stop_active_openvpn() -> None:
         stop_process(active_openvpn_process)
         active_openvpn_process = None
         active_openvpn_node_id = ""
+        try:
+            set_state(connected_since=0)
+        except Exception:
+            pass
         
         if config_to_delete:
             try:
@@ -1818,6 +1826,7 @@ def enforce_active_node_allowed_by_routing(ui_cfg: dict[str, Any], reason: str =
             write_json(NODES_FILE, nodes)
         set_state(
             active_openvpn_node_id="",
+            connected_since=0,
             active_node_latency="无活动连接",
             proxy_ok=False,
             proxy_ip="-",
@@ -2197,7 +2206,7 @@ def auto_switch_node(attempt: int = 0) -> None:
             for item in nodes:
                 item["active"] = False
             write_json(NODES_FILE, nodes)
-        set_state(active_openvpn_node_id="", last_check_message=msg)
+        set_state(active_openvpn_node_id="", connected_since=0, last_check_message=msg)
         if schedule_background_refill():
             log_to_json("INFO", "Main", "已启动唯一后台节点补齐任务")
 
@@ -2340,7 +2349,18 @@ def connect_node(node_id: str) -> str:
                 raise ConnectionCancelled("连接操作已取消")
             active_openvpn_process = process
             active_openvpn_node_id = node_id
-        set_state(tunnel_ready=True, proxy_ready=False)
+        # 记录连接统计：开始时间 + 每日切换次数
+        _now = time.time()
+        _today = time.strftime("%Y-%m-%d", time.localtime(_now))
+        _st = get_state()
+        _updates = {"connected_since": _now, "tunnel_ready": True, "proxy_ready": False}
+        if _st.get("switch_count_date") != _today:
+            _updates["switch_count_date"] = _today
+            _updates["switch_count_today"] = 0
+        # 有前任活动节点才算一次切换（首次连接不算）
+        if previous_node_id and previous_node_id != node_id:
+            _updates["switch_count_today"] = int(_st.get("switch_count_today") or 0) + 1
+        set_state(**_updates)
         
         set_state(active_node_latency="配置路由", last_check_message="正在配置策略路由规则与流量转发...")
         routing_ready = setup_policy_routing("tun0")
@@ -2779,7 +2799,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
     body {
       margin: 0;
       padding: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
       background-color: var(--bg-dark);
       background-image: 
         radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
@@ -3061,7 +3081,7 @@ INDEX_HTML = r"""<!doctype html>
 
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
       background-color: var(--bg-dark);
       background-image: 
         radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
@@ -3197,10 +3217,53 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     main {
-      padding: 24px 32px;
-      max-width: 1400px;
+      padding: 24px 32px 48px;
+      max-width: 1480px;
       margin: 0 auto;
     }
+    @media (max-width: 768px) {
+      main { padding: 16px 16px 40px; }
+    }
+
+    /* 表格行微交互 */
+    tbody tr {
+      transition: background-color 0.15s ease;
+    }
+    tbody tr:hover {
+      background-color: rgba(255, 255, 255, 0.025);
+    }
+    tbody tr.active-row:hover {
+      background-color: rgba(16, 185, 129, 0.08);
+    }
+
+    /* 按钮微交互统一 */
+    .test-btn, .connect-btn, .toolbar-btn {
+      transition: transform 0.12s ease, box-shadow 0.12s ease, background-color 0.15s ease, border-color 0.15s ease;
+    }
+    .test-btn:hover:not(:disabled), .connect-btn:hover:not(:disabled), .toolbar-btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+    }
+    .test-btn:active:not(:disabled), .connect-btn:active:not(:disabled), .toolbar-btn:active:not(:disabled) {
+      transform: translateY(0);
+    }
+
+    /* 输入框聚焦 */
+    .toolbar select:focus, .input-field:focus {
+      outline: none;
+      border-color: rgba(99, 102, 241, 0.5);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+    }
+
+    /* 滚动条美化 */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 6px;
+      border: 2px solid transparent;
+      background-clip: content-box;
+    }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); background-clip: content-box; }
 
     .active-card {
       background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(79, 70, 229, 0.04) 100%);
@@ -3833,6 +3896,167 @@ INDEX_HTML = r"""<!doctype html>
       border-color: rgba(59, 130, 246, 0.24);
     }
 
+    /* ===== 数据概览卡片 ===== */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    @media (max-width: 900px) {
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    .stat-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 18px 20px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .stat-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--border-color-hover);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    }
+    .stat-card::before {
+      content: "";
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 3px;
+      background: var(--accent, var(--primary));
+      opacity: 0.8;
+    }
+    .stat-icon {
+      width: 44px; height: 44px;
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      background: color-mix(in srgb, var(--accent, var(--primary)) 12%, transparent);
+      color: var(--accent, var(--primary));
+    }
+    .stat-icon svg { width: 22px; height: 22px; }
+    .stat-body { min-width: 0; }
+    .stat-value {
+      font-size: 24px; font-weight: 700;
+      color: var(--text-primary);
+      line-height: 1.2;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.5px;
+    }
+    .stat-value small { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
+    .stat-label {
+      font-size: 12px; color: var(--text-secondary);
+      margin-top: 2px; white-space: nowrap;
+    }
+
+    /* ===== 标签页导航 ===== */
+    .tabs-bar {
+      display: flex; gap: 4px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 0;
+    }
+    .tab-btn {
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      padding: 10px 18px;
+      font-size: 14px; font-weight: 600;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: color 0.15s ease, border-color 0.15s ease;
+      height: auto;
+      transform: none !important;
+    }
+    .tab-btn:hover {
+      background: transparent;
+      color: var(--text-primary);
+      transform: none;
+    }
+    .tab-btn.active {
+      color: var(--text-primary);
+      border-bottom-color: var(--primary);
+      background: transparent;
+    }
+    .tab-btn.active:hover { transform: none; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; animation: modalFadeIn 0.2s ease-out; }
+
+    /* ===== 节点卡片视图 ===== */
+    .view-toggle {
+      display: inline-flex;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .view-toggle button {
+      border: none; border-radius: 0;
+      padding: 0 12px; height: 36px;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+    .view-toggle button.active {
+      background: rgba(99, 102, 241, 0.15);
+      color: var(--text-primary);
+    }
+    .view-toggle button:hover { transform: none; }
+    .nodes-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 14px;
+      padding: 16px;
+    }
+    .node-card {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 16px;
+      transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .node-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--border-color-hover);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+    }
+    .node-card.active-card {
+      border-color: rgba(16, 185, 129, 0.4);
+      background: rgba(16, 185, 129, 0.04);
+    }
+    .node-card-head {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 10px; gap: 8px;
+    }
+    .node-card-ip {
+      font-family: ui-monospace, monospace;
+      font-size: 14px; font-weight: 600;
+      color: var(--text-primary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .node-card-meta {
+      display: flex; flex-wrap: wrap; gap: 6px;
+      font-size: 12px; color: var(--text-secondary);
+      margin-bottom: 12px;
+    }
+    .node-card-meta span {
+      background: rgba(255,255,255,0.04);
+      padding: 3px 8px; border-radius: 6px;
+      white-space: nowrap;
+    }
+    .node-card-actions {
+      display: flex; gap: 8px; flex-wrap: wrap;
+      align-items: center;
+    }
+    .node-card-actions .test-btn,
+    .node-card-actions .connect-btn { height: 30px; font-size: 12px; padding: 0 10px; }
+    .node-card-actions .ip-check-link { height: 30px; }
+
     .current-badge {
       background: rgba(99, 102, 241, 0.15);
       color: #818cf8;
@@ -4355,6 +4579,45 @@ INDEX_HTML = r"""<!doctype html>
   </div>
 </header>
 <main>
+  <!-- 数据概览 -->
+  <div class="stats-grid" id="stats_grid">
+    <div class="stat-card" style="--accent: #34d399;">
+      <div class="stat-icon">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      </div>
+      <div class="stat-body">
+        <div class="stat-value" id="stat_available">-</div>
+        <div class="stat-label">可用节点</div>
+      </div>
+    </div>
+    <div class="stat-card" style="--accent: #93c5fd;">
+      <div class="stat-icon">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+      </div>
+      <div class="stat-body">
+        <div class="stat-value" id="stat_latency">- <small>ms</small></div>
+        <div class="stat-label">平均延迟</div>
+      </div>
+    </div>
+    <div class="stat-card" style="--accent: #a5b4fc;">
+      <div class="stat-icon">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      </div>
+      <div class="stat-body">
+        <div class="stat-value" id="stat_uptime">-</div>
+        <div class="stat-label">当前连接时长</div>
+      </div>
+    </div>
+    <div class="stat-card" style="--accent: #fbbf24;">
+      <div class="stat-icon">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+      </div>
+      <div class="stat-body">
+        <div class="stat-value" id="stat_switches">-</div>
+        <div class="stat-label">今日切换次数</div>
+      </div>
+    </div>
+  </div>
   
     <!-- 当前连接活动节点卡片 -->
     <section class="active-node-section" id="active_node_card" style="margin-bottom: 24px;">
@@ -4395,7 +4658,17 @@ INDEX_HTML = r"""<!doctype html>
       <option value="residential">住宅IP</option>
       <option value="hosting">机房IP</option>
     </select>
-    <button id="btn_favorites" class="toolbar-btn" type="button" onclick="toggleFavoritesView()" style="margin-left: auto; height: 42px; gap: 6px;">
+    <div class="view-toggle" style="margin-left: auto;" role="group" aria-label="视图切换">
+      <button type="button" id="view_table_btn" class="active" onclick="setNodeView('table')" title="表格视图">
+        <svg style="width:15px; height:15px; vertical-align: -2px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+        表格
+      </button>
+      <button type="button" id="view_card_btn" onclick="setNodeView('card')" title="卡片视图">
+        <svg style="width:15px; height:15px; vertical-align: -2px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+        卡片
+      </button>
+    </div>
+    <button id="btn_favorites" class="toolbar-btn" type="button" onclick="toggleFavoritesView()" style="height: 42px; gap: 6px;">
       <svg xmlns="http://www.w3.org/2000/svg" style="width:16px; height:16px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.907c.961 0 1.371 1.24.588 1.81l-3.97 2.883a1 1 0 00-.364 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.971-2.883a1 1 0 00-1.175 0l-3.97 2.883c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.364-1.118l-3.97-2.883c-.783-.57-.372-1.81.588-1.81h4.906a1 1 0 00.951-.69l1.519-4.674z" />
       </svg>
@@ -4447,6 +4720,9 @@ INDEX_HTML = r"""<!doctype html>
       </table>
     </div>
     
+    <!-- 卡片视图容器 -->
+    <div id="nodes_grid" class="nodes-grid" style="display: none;"></div>
+
     <!-- 分页控制栏 -->
     <div id="pagination_container" class="pagination-container" style="padding: 16px; display: none; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-color); flex-wrap: wrap; gap: 12px;">
       <div style="font-size: 13px; color: var(--text-secondary);">
@@ -5153,6 +5429,115 @@ function stableSortNodes() {
   });
 }
 
+// ===== 视图切换：表格 / 卡片 =====
+let nodeViewMode = "table";
+function setNodeView(mode) {
+  nodeViewMode = mode;
+  const tb = $("view_table_btn"), cb = $("view_card_btn");
+  if (tb) tb.classList.toggle("active", mode === "table");
+  if (cb) cb.classList.toggle("active", mode === "card");
+  const tableWrap = document.querySelector(".table-container");
+  const grid = $("nodes_grid");
+  if (tableWrap) tableWrap.style.display = mode === "table" ? "" : "none";
+  if (grid) grid.style.display = mode === "card" ? "" : "none";
+  try { localStorage.setItem("aimili_node_view", mode); } catch (e) {}
+  render();
+}
+(function restoreNodeView(){
+  try {
+    const saved = localStorage.getItem("aimili_node_view");
+    if (saved === "card") {
+      // DOM 就绪后切换
+      document.addEventListener("DOMContentLoaded", () => setNodeView("card"));
+    }
+  } catch (e) {}
+})();
+
+// ===== 数据概览卡片 =====
+function formatDuration(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+function renderStats() {
+  const list = Array.isArray(nodes) ? nodes : [];
+  const available = list.filter(n => n && n.probe_status === "available");
+  const lat = available.map(n => parseInt(n.latency_ms, 10)).filter(x => x > 0);
+  const avg = lat.length ? Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) : 0;
+
+  const elA = $("stat_available");
+  if (elA) elA.textContent = available.length;
+
+  const elL = $("stat_latency");
+  if (elL) elL.innerHTML = lat.length ? `${avg} <small>ms</small>` : `- <small>ms</small>`;
+
+  const elU = $("stat_uptime");
+  if (elU) {
+    const since = parseFloat((state && state.connected_since) || 0);
+    elU.textContent = since > 0 ? formatDuration(Date.now() / 1000 - since) : "未连接";
+  }
+
+  const elS = $("stat_switches");
+  if (elS) elS.textContent = (state && state.switch_count_today) || 0;
+}
+// 连接时长每秒刷新
+setInterval(() => {
+  const elU = $("stat_uptime");
+  if (!elU) return;
+  const since = parseFloat((state && state.connected_since) || 0);
+  elU.textContent = since > 0 ? formatDuration(Date.now() / 1000 - since) : "未连接";
+}, 1000);
+
+// ===== 节点卡片视图渲染 =====
+function renderNodeCards(list) {
+  const grid = $("nodes_grid");
+  if (!grid) return;
+  if (!list || list.length === 0) {
+    grid.innerHTML = `<div style="grid-column: 1/-1; text-align:center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</div>`;
+    return;
+  }
+  grid.innerHTML = list.map(n => {
+    if (!n) return "";
+    const isActive = activeNode && n.id === activeNode.id;
+    const isPending = Boolean(state.is_connecting && state.pending_node_id === n.id);
+    const badgeClass = isActive ? "available" : (isPending ? "testing" : (n.probe_status || "not_checked"));
+    const badgeText = isActive ? "已连接" : (isPending ? "切换中" : translateStatus(n.probe_status));
+    const s = ipScore(n);
+    const flag = countryFlag(n.geo_country_short || n.country_short);
+    const loc = n.location || translateCountry(n.country) || "-";
+    const ip = esc(n.ip || n.remote_host || "-");
+    const port = n.remote_port || "";
+    const lat = nodeLatencyHtml(n);
+    const isTesting = testingNodeIds.has(n.id) || n.probe_status === "testing";
+    const isUnavailable = n.probe_status === "unavailable";
+    return `<div class="node-card${isActive ? " active-card" : ""}">
+      <div class="node-card-head">
+        <span class="badge ${badgeClass}">${badgeText}</span>
+        <span class="badge ${s.cls}" title="${esc(s.title)}">${esc(s.label)}</span>
+      </div>
+      <div class="node-card-ip" title="${ip}:${port}">${ip}:${port}</div>
+      <div class="node-card-meta">
+        <span>${lat}</span>
+        <span>${flag ? esc(flag) + " " : ""}${esc(loc)}</span>
+        <span>${esc(translateIpType(n.ip_type))}</span>
+      </div>
+      <div class="node-card-actions">
+        <button class="test-btn" data-node-id="${esc(n.id)}" ${isTesting ? "disabled" : ""} onclick="testNode(this, '${esc(n.id)}', event)">${isTesting ? "检测中" : "检测"}</button>
+        <button class="connect-btn" ${(isUnavailable || isTesting || state.is_connecting) ? 'disabled style="opacity:0.3; cursor:not-allowed;"' : ""} onclick="connectNode('${esc(n.id)}')">${isActive ? "已连接" : (isPending ? "切换中" : "切换")}</button>
+        ${(() => {
+          const cip = n.ip || n.remote_host;
+          if (!cip) return "";
+          return IP_CHECK_SITES.map(site =>
+            `<a class="ip-check-link" href="${esc(site.url(cip))}" target="_blank" rel="noopener" title="${esc(site.title)}">${esc(site.name)}</a>`
+          ).join("");
+        })()}
+      </div>
+    </div>`;
+  }).join("");
+}
+
 function render(){
   const versionLabel = state.app_version_label || "V2.1.5 正式版";
   if ($("github_version_label")) $("github_version_label").textContent = versionLabel;
@@ -5383,6 +5768,13 @@ function render(){
     }).join("");
   }
   setHtmlIfChanged($("rows"), rowsHtml);
+
+  // 卡片视图同步渲染
+  if (nodeViewMode === "card") {
+    renderNodeCards(currentPageNodes);
+  }
+  // 数据概览卡片更新
+  renderStats();
 
   // Render pagination controls
   $("page_start").textContent = shown.length > 0 ? startIndex + 1 : 0;
