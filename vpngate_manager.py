@@ -2232,8 +2232,15 @@ def auto_switch_node(attempt: int = 0) -> None:
             and not n.get("active")
         ]
         candidates = apply_routing_filters(candidates, ui_cfg)
-            
-        candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
+
+        # 与列表排序一致：徽章评级 → 拉取时间(新优先) → 评分 → 延迟 → 住宅/移动
+        candidates.sort(key=lambda n: (
+            badge_rank(n),
+            -float(n.get("last_seen_at") or 0),
+            -parse_int(n.get("score")),
+            parse_int(n.get("latency_ms")) or 999999,
+            0 if n.get("ip_type") in ("residential", "mobile") else 1,
+        ))
         
     if candidates:
         next_node = candidates[0]
