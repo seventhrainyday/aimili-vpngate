@@ -3839,6 +3839,66 @@ INDEX_HTML = r"""<!doctype html>
       border-color: rgba(99, 102, 241, 0.3);
     }
 
+    .score-excellent {
+      background: rgba(16, 185, 129, 0.12);
+      color: #34d399;
+      border-color: rgba(16, 185, 129, 0.25);
+    }
+
+    .score-good {
+      background: rgba(59, 130, 246, 0.1);
+      color: #93c5fd;
+      border-color: rgba(59, 130, 246, 0.2);
+    }
+
+    .score-normal {
+      background: rgba(148, 163, 184, 0.1);
+      color: #cbd5e1;
+      border-color: rgba(148, 163, 184, 0.2);
+    }
+
+    .score-datacenter {
+      background: rgba(245, 158, 11, 0.1);
+      color: #fbbf24;
+      border-color: rgba(245, 158, 11, 0.2);
+    }
+
+    .score-warn {
+      background: rgba(244, 63, 94, 0.1);
+      color: #fb7185;
+      border-color: rgba(244, 63, 94, 0.2);
+    }
+
+    .score-unknown {
+      background: rgba(100, 116, 139, 0.08);
+      color: #94a3b8;
+      border-color: rgba(100, 116, 139, 0.15);
+    }
+
+    .ip-check-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 30px;
+      height: 30px;
+      padding: 0 6px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-color);
+      background: transparent;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.15s ease;
+    }
+
+    .ip-check-link:hover {
+      color: var(--text-primary);
+      border-color: rgba(59, 130, 246, 0.4);
+      background: rgba(59, 130, 246, 0.08);
+    }
+
     .table-actions {
       display: flex;
       gap: 8px;
@@ -4379,7 +4439,8 @@ INDEX_HTML = r"""<!doctype html>
             <th>物理位置</th>
             <th>运营主体 / ISP</th>
             <th style="width: 110px;">IP 类型</th>
-            <th style="width: 230px;">操作</th>
+            <th style="width: 80px;">评分</th>
+            <th style="width: 280px;">操作</th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
@@ -4818,6 +4879,29 @@ const translateIpType = t => {
 
 const translateConfidence = value => ({high: "高", medium: "中", low: "低"}[value] || "未知");
 
+// IP 评分：基于内置 IP 分类数据（ip-api 富化）的可视化评级
+// 精确数字分请点外链去 iplark / ippure / ipsuper 查询
+const ipScore = n => {
+  const quality = n.quality || "";
+  const ipType = n.ip_type || "";
+  const isProxy = Boolean(n.is_proxy);
+  const hasData = Boolean(quality || ipType);
+  if (!hasData) return {label: "未知", cls: "score-unknown", title: "暂无 IP 分类数据，点击外链手动查询"};
+  if (quality === "proxy" || isProxy) return {label: "注意", cls: "score-warn", title: "检测到代理标记，IP 可能被重点风控"};
+  if (quality === "datacenter" || ipType === "hosting") return {label: "机房", cls: "score-datacenter", title: "机房 IP，易被识别为代理/批量流量"};
+  if (quality === "mobile" || ipType === "mobile") return {label: "优质", cls: "score-excellent", title: "移动网络 IP，通常较干净"};
+  if (ipType === "residential") return {label: "良好", cls: "score-good", title: "住宅 IP，适合做 VPN 出口"};
+  if (quality === "normal") return {label: "一般", cls: "score-normal", title: "普通 IP，无明显风险标记"};
+  return {label: "未知", cls: "score-unknown", title: "暂无 IP 分类数据，点击外链手动查询"};
+};
+
+// 三个 IP 检测站的外链模板
+const IP_CHECK_SITES = [
+  {name: "Lark", title: "去 iplark.com 查此 IP", url: ip => `https://iplark.com/${encodeURIComponent(ip)}`},
+  {name: "Pure", title: "去 ippure.com 查此 IP", url: ip => `https://ippure.com/${encodeURIComponent(ip)}`},
+  {name: "Super", title: "去 ipsuper.com 查此 IP", url: ip => `https://ipsuper.com/${encodeURIComponent(ip)}`},
+];
+
 const translateCountry = c => {
   const dict = {
     "Japan": "日本",
@@ -5236,7 +5320,7 @@ function render(){
   // Render table rows
   let rowsHtml = "";
   if (currentPageNodes.length === 0) {
-    rowsHtml = `<tr><td colspan="7" style="text-align: center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</td></tr>`;
+    rowsHtml = `<tr><td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</td></tr>`;
   } else {
     rowsHtml = currentPageNodes.map(n=>{
       if (!n) return '';
@@ -5280,11 +5364,19 @@ function render(){
         <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${esc(locationTitle)}">${flag ? `<span aria-hidden="true">${esc(flag)}</span> ` : ""}${esc(displayLocation)}</td>
         <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${esc(n.owner||n.as_name||"-")}">${esc(n.owner||n.as_name||"-")}</td>
         <td style="white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis;" title="${esc(ipTypeTitle)}">${esc(translateIpType(n.ip_type))}</td>
+        <td style="white-space: nowrap;">${(() => { const s = ipScore(n); return `<span class="badge ${s.cls}" title="${esc(s.title)}">${esc(s.label)}</span>`; })()}</td>
         <td>
           <div class="table-actions">
             ${testBtn}
             ${favBtn}
             ${connectBtn}
+            ${(() => {
+              const ip = n.ip || n.remote_host;
+              if (!ip) return "";
+              return IP_CHECK_SITES.map(s =>
+                `<a class="ip-check-link" href="${esc(s.url(ip))}" target="_blank" rel="noopener" title="${esc(s.title)}：${esc(ip)}">${esc(s.name)}</a>`
+              ).join("");
+            })()}
           </div>
         </td>
       </tr>`;

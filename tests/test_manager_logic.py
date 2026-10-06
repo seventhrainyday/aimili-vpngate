@@ -748,7 +748,7 @@ class ManagerLogicTests(unittest.TestCase):
 
     def test_node_table_contains_latency_country_panel_and_test_action(self) -> None:
         self.assertIn('<th style="width: 125px;">延迟</th>', manager.INDEX_HTML)
-        self.assertIn('colspan="7"', manager.INDEX_HTML)
+        self.assertIn('colspan="8"', manager.INDEX_HTML)
         self.assertIn('class="country-option-input"', manager.INDEX_HTML)
         self.assertIn('${testBtn}', manager.INDEX_HTML)
 
