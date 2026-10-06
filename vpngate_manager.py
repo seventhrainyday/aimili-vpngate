@@ -5853,7 +5853,7 @@ INDEX_HTML = r"""<!doctype html>
         <div id="settings-tab-proxy">
         <div class="form-group" style="margin-bottom: 16px;">
           <label class="form-label" for="net_proxy_port">HTTP/SOCKS5 代理出站端口</label>
-          <input type="number" id="net_proxy_port" class="input-field" required min="1024" max="65535" placeholder="7928">
+          <input type="number" id="net_proxy_port" class="input-field" min="1024" max="65535" placeholder="7928">
         </div>
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
@@ -5934,12 +5934,12 @@ INDEX_HTML = r"""<!doctype html>
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
             <div class="form-group" style="margin-bottom: 0;">
               <label class="form-label" for="net_check_interval">自动检测间隔（分钟）</label>
-              <input type="number" id="net_check_interval" class="input-field" required min="1" max="1440" placeholder="21">
+              <input type="number" id="net_check_interval" class="input-field" min="1" max="1440" placeholder="21">
               <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">每隔多久自动拉取并检测全部节点</div>
             </div>
             <div class="form-group" style="margin-bottom: 0;">
               <label class="form-label" for="net_probe_workers">检测并发数</label>
-              <input type="number" id="net_probe_workers" class="input-field" required min="1" max="20" placeholder="10">
+              <input type="number" id="net_probe_workers" class="input-field" min="1" max="20" placeholder="10">
               <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">同时检测几个节点，越高越快但越耗资源</div>
             </div>
           </div>
