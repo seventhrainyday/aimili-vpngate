@@ -9246,6 +9246,15 @@ class Handler(BaseHTTPRequestHandler):
         return data
 
     def do_GET(self) -> None:
+        try:
+            self._do_GET_inner()
+        except Exception as exc:
+            try:
+                self.send_json({"ok": False, "error": f"服务器内部错误: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            except Exception:
+                pass
+
+    def _do_GET_inner(self) -> None:
         effective_path = self.validate_path()
         if effective_path == "": return
         
@@ -9503,6 +9512,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
+        try:
+            self._do_POST_inner()
+        except Exception as exc:
+            try:
+                self.send_json({"ok": False, "error": f"服务器内部错误: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            except Exception:
+                pass
+
+    def _do_POST_inner(self) -> None:
         global is_connecting
         effective_path = self.validate_path()
         if effective_path == "": return

@@ -57,6 +57,7 @@
 ## 更新日志
 
 ### 2026-10-07
+- `xxx` do_GET/do_POST 加最外层异常兜底：任何未捕获异常都返回 500 JSON，不再静默掐连接（ARM/Alpine 排查）
 - `7bfad44` NAT 兼容：响应加 `Connection: close`，避免复用连接被 NAT 网关掐掉
 - `d990e77` Alpine/musl 兼容：显式设置线程栈 8MB，避免请求线程栈溢出
 - `0ab139d` ARM 兼容：`send_bytes` 加 `wfile.flush()`，`HTTPServer` 加 `daemon_threads`
