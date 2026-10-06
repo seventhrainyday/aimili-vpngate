@@ -332,6 +332,8 @@ def load_ui_config() -> dict[str, Any]:
             "favorite_node_ids": [],
             "fav_fail_fallback": False,
             "discovery_countries": [],
+            "check_interval_minutes": 21,
+            "probe_workers": 10,
         }
         updated = False
         if auth_file.exists():
@@ -529,6 +531,8 @@ def get_state() -> dict[str, Any]:
     state["secret_path"] = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
     state["password_set"] = bool(ui_cfg.get("password"))
     state["proxy_port"] = ui_cfg.get("proxy_port", 7928)
+    state["check_interval_minutes"] = ui_cfg.get("check_interval_minutes", 21)
+    state["probe_workers"] = ui_cfg.get("probe_workers", 10)
     state["routing_mode"] = ui_cfg.get("routing_mode", "auto")
     state["force_country"] = ui_cfg.get("force_country", "")
     state["routing_ip_type"] = ui_cfg.get("routing_ip_type", "all")
@@ -2040,7 +2044,12 @@ def test_multiple_nodes(node_ids: list[str], target_available: int | None = None
     updated_nodes_map: dict[str, dict[str, Any]] = {}
     available_count = 0
     systemic_failure = ""
-    max_workers = min(NODE_PROBE_WORKERS, max(1, len(to_test)))
+    try:
+        _cfg_workers = int(load_ui_config().get("probe_workers", NODE_PROBE_WORKERS))
+    except Exception:
+        _cfg_workers = NODE_PROBE_WORKERS
+    _cfg_workers = max(1, min(20, _cfg_workers))
+    max_workers = min(_cfg_workers, max(1, len(to_test)))
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         for batch_start in range(0, len(to_test), max_workers):
             if systemic_failure or (target_available is not None and available_count >= target_available):
@@ -2772,7 +2781,12 @@ def collector_loop() -> None:
         if not active_openvpn_running() and not success:
             sleep_time = 30
         else:
-            sleep_time = CHECK_INTERVAL_SECONDS
+            try:
+                _cfg_interval = int(load_ui_config().get("check_interval_minutes", 21))
+            except Exception:
+                _cfg_interval = 21
+            _cfg_interval = max(1, min(1440, _cfg_interval))
+            sleep_time = _cfg_interval * 60
             
         time.sleep(sleep_time)
 
@@ -4808,6 +4822,22 @@ INDEX_HTML = r"""<!doctype html>
         </div>
 
         <div style="border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 16px; margin-bottom: 16px;">
+          <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px;">节点检测设置</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label" for="net_check_interval">自动检测间隔（分钟）</label>
+              <input type="number" id="net_check_interval" class="input-field" required min="1" max="1440" placeholder="21">
+              <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">每隔多久自动拉取并检测全部节点</div>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label" for="net_probe_workers">检测并发数</label>
+              <input type="number" id="net_probe_workers" class="input-field" required min="1" max="20" placeholder="10">
+              <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">同时检测几个节点，越高越快但越耗资源</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 16px; margin-bottom: 16px;">
           <div class="form-group" style="margin-bottom: 16px;">
             <label class="form-label">IP 出站路由模式</label>
             <input type="hidden" id="net_routing_mode" value="auto">
@@ -6544,6 +6574,8 @@ function openNetworkModal() {
   
   if (state) {
     $("net_proxy_port").value = state.proxy_port || 7928;
+    $("net_check_interval").value = state.check_interval_minutes || 21;
+    $("net_probe_workers").value = state.probe_workers || 10;
     const mode = state.routing_mode || "auto";
     const ipType = state.routing_ip_type || "all";
     
@@ -6573,6 +6605,8 @@ async function saveNetwork(e) {
   const routingMode = $("net_routing_mode").value;
   const forceCountry = $("net_force_country").value;
   const routingIpType = $("net_routing_ip_type").value;
+  const checkInterval = parseInt($("net_check_interval").value);
+  const probeWorkers = parseInt($("net_probe_workers").value);
   
   if (isNaN(proxyPort) || proxyPort < 1024 || proxyPort > 65535) {
     errorDivEl.textContent = "代理出站端口范围必须在 1024 至 65535 之间";
@@ -6582,6 +6616,16 @@ async function saveNetwork(e) {
 
   if (state && proxyPort === state.port) {
     errorDivEl.textContent = "代理出站端口不能与网页管理端口相同";
+    errorDivEl.style.display = "block";
+    return;
+  }
+  if (isNaN(checkInterval) || checkInterval < 1 || checkInterval > 1440) {
+    errorDivEl.textContent = "检测间隔必须在 1 至 1440 分钟之间";
+    errorDivEl.style.display = "block";
+    return;
+  }
+  if (isNaN(probeWorkers) || probeWorkers < 1 || probeWorkers > 20) {
+    errorDivEl.textContent = "检测并发数必须在 1 至 20 之间";
     errorDivEl.style.display = "block";
     return;
   }
@@ -6608,7 +6652,9 @@ async function saveNetwork(e) {
         proxy_port: proxyPort,
         routing_mode: routingMode,
         force_country: forceCountry,
-        routing_ip_type: routingIpType
+        routing_ip_type: routingIpType,
+        check_interval_minutes: checkInterval,
+        probe_workers: probeWorkers
       })
     }, 25000);
     const data = await readJsonResponse(res, "保存代理设置失败");
@@ -7523,6 +7569,8 @@ class Handler(BaseHTTPRequestHandler):
                 routing_mode = str(payload.get("routing_mode") or "auto").strip()
                 force_country = normalize_routing_country(payload.get("force_country"), read_nodes())
                 routing_ip_type = str(payload.get("routing_ip_type") or "all").strip()
+                check_interval_minutes = payload.get("check_interval_minutes")
+                probe_workers = payload.get("probe_workers")
                 
                 try:
                     new_proxy_port_int = int(new_proxy_port)
@@ -7541,6 +7589,20 @@ class Handler(BaseHTTPRequestHandler):
                 if routing_ip_type not in ("all", "residential", "hosting"):
                     self.send_json({"ok": False, "error": "无效的IP出站类型过滤"}, HTTPStatus.BAD_REQUEST)
                     return
+                try:
+                    check_interval_minutes_int = int(check_interval_minutes)
+                    if not (1 <= check_interval_minutes_int <= 1440):
+                        raise ValueError()
+                except (TypeError, ValueError):
+                    self.send_json({"ok": False, "error": "检测间隔必须在 1 至 1440 分钟之间"}, HTTPStatus.BAD_REQUEST)
+                    return
+                try:
+                    probe_workers_int = int(probe_workers)
+                    if not (1 <= probe_workers_int <= 20):
+                        raise ValueError()
+                except (TypeError, ValueError):
+                    self.send_json({"ok": False, "error": "检测并发数必须在 1 至 20 之间"}, HTTPStatus.BAD_REQUEST)
+                    return
                 
                 ui_cfg = load_ui_config()
                 expected_proxy_port = ui_cfg.get("proxy_port", 7928)
@@ -7554,6 +7616,8 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 
                 ui_cfg["proxy_port"] = new_proxy_port_int
+                ui_cfg["check_interval_minutes"] = check_interval_minutes_int
+                ui_cfg["probe_workers"] = probe_workers_int
                 ui_cfg["routing_mode"] = routing_mode
                 ui_cfg["force_country"] = force_country
                 ui_cfg["routing_ip_type"] = routing_ip_type

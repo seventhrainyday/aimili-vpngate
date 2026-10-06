@@ -150,6 +150,7 @@ class ManagerLogicTests(unittest.TestCase):
             mock.patch.object(manager.vpn_utils, "enrich_ip_info"),
             mock.patch.object(manager, "run_openvpn_until_ready", side_effect=fake_openvpn),
             mock.patch.object(manager, "NODE_PROBE_WORKERS", 5),
+            mock.patch.object(manager, "load_ui_config", return_value={"probe_workers": 5}),
         ):
             results = manager.test_multiple_nodes(
                 [node["id"] for node in nodes],
@@ -514,6 +515,7 @@ class ManagerLogicTests(unittest.TestCase):
                 return_value=(False, "[ERR_OVPN_TUN_NOT_AVAILABLE] missing TUN", None),
             ) as openvpn_mock,
             mock.patch.object(manager, "NODE_PROBE_WORKERS", 5),
+            mock.patch.object(manager, "load_ui_config", return_value={"probe_workers": 5}),
             mock.patch.object(manager, "log_to_json"),
         ):
             results = manager.test_multiple_nodes(
@@ -539,6 +541,7 @@ class ManagerLogicTests(unittest.TestCase):
                 return_value=(False, "[ERR_OVPN_CMD_NOT_FOUND] openvpn missing", None),
             ) as openvpn_mock,
             mock.patch.object(manager, "NODE_PROBE_WORKERS", 5),
+            mock.patch.object(manager, "load_ui_config", return_value={"probe_workers": 5}),
             mock.patch.object(manager, "log_to_json"),
         ):
             result = manager.maintain_valid_nodes()
