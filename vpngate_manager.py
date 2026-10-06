@@ -334,6 +334,9 @@ def load_ui_config() -> dict[str, Any]:
             "discovery_countries": [],
             "check_interval_minutes": 21,
             "probe_workers": 10,
+            "proxy_bind_host": "0.0.0.0",
+            "proxy_user": "",
+            "proxy_password": "",
         }
         updated = False
         if auth_file.exists():
@@ -508,7 +511,8 @@ def get_state() -> dict[str, Any]:
     state.setdefault("target_valid_nodes", TARGET_VALID_NODES)
     state.setdefault("fetch_interval_seconds", FETCH_INTERVAL_SECONDS)
     state.setdefault("check_interval_seconds", CHECK_INTERVAL_SECONDS)
-    _proxy_display = f"[{LOCAL_PROXY_HOST}]" if ":" in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST
+    _ui_bind = str(load_ui_config().get("proxy_bind_host") or "0.0.0.0")
+    _proxy_display = f"[{_ui_bind}]" if ":" in _ui_bind else _ui_bind
     state["local_proxy"] = f"http://{_proxy_display}:{LOCAL_PROXY_PORT}"
     state.setdefault("last_fetch_status", "not_started")
     state.setdefault("last_check_message", "")
@@ -531,6 +535,9 @@ def get_state() -> dict[str, Any]:
     state["secret_path"] = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
     state["password_set"] = bool(ui_cfg.get("password"))
     state["proxy_port"] = ui_cfg.get("proxy_port", 7928)
+    state["proxy_bind_host"] = ui_cfg.get("proxy_bind_host", "0.0.0.0")
+    state["proxy_user"] = ui_cfg.get("proxy_user", "")
+    state["proxy_auth_enabled"] = bool(ui_cfg.get("proxy_user") and ui_cfg.get("proxy_password"))
     state["check_interval_minutes"] = ui_cfg.get("check_interval_minutes", 21)
     state["probe_workers"] = ui_cfg.get("probe_workers", 10)
     state["routing_mode"] = ui_cfg.get("routing_mode", "auto")
@@ -4830,6 +4837,32 @@ INDEX_HTML = r"""<!doctype html>
           <input type="number" id="net_proxy_port" class="input-field" required min="1024" max="65535" placeholder="7928">
         </div>
 
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="net_proxy_bind">代理监听地址</label>
+            <select id="net_proxy_bind" class="input-field">
+              <option value="0.0.0.0">0.0.0.0（允许外部连接）</option>
+              <option value="127.0.0.1">127.0.0.1（仅本机）</option>
+            </select>
+            <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">改动需重启服务生效</div>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">认证状态</label>
+            <div id="net_proxy_auth_status" style="font-size: 13px; padding: 8px 0; color: var(--text-secondary);">-</div>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="net_proxy_user">代理账号（留空则无认证）</label>
+            <input type="text" id="net_proxy_user" class="input-field" placeholder="留空表示无需认证" autocomplete="off">
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="net_proxy_password">代理密码</label>
+            <input type="password" id="net_proxy_password" class="input-field" placeholder="留空表示无需认证" autocomplete="new-password">
+          </div>
+        </div>
+
         <div style="border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 16px; margin-bottom: 16px;">
           <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px;">节点检测设置</div>
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
@@ -6625,6 +6658,15 @@ function openNetworkModal() {
   
   if (state) {
     $("net_proxy_port").value = state.proxy_port || 7928;
+    $("net_proxy_bind").value = state.proxy_bind_host || "0.0.0.0";
+    $("net_proxy_user").value = state.proxy_user || "";
+    $("net_proxy_password").value = "";
+    const authSt = $("net_proxy_auth_status");
+    if (authSt) {
+      authSt.innerHTML = state.proxy_auth_enabled
+        ? '<span style="color: #34d399;">● 已启用认证</span>'
+        : '<span>○ 未启用（任何人可连）</span>';
+    }
     $("net_check_interval").value = state.check_interval_minutes || 21;
     $("net_probe_workers").value = state.probe_workers || 10;
     const mode = state.routing_mode || "auto";
@@ -6658,6 +6700,9 @@ async function saveNetwork(e) {
   const routingIpType = $("net_routing_ip_type").value;
   const checkInterval = parseInt($("net_check_interval").value);
   const probeWorkers = parseInt($("net_probe_workers").value);
+  const proxyBind = $("net_proxy_bind").value;
+  const proxyUser = $("net_proxy_user").value.trim();
+  const proxyPassword = $("net_proxy_password").value;
   
   if (isNaN(proxyPort) || proxyPort < 1024 || proxyPort > 65535) {
     errorDivEl.textContent = "代理出站端口范围必须在 1024 至 65535 之间";
@@ -6679,6 +6724,14 @@ async function saveNetwork(e) {
     errorDivEl.textContent = "检测并发数必须在 1 至 20 之间";
     errorDivEl.style.display = "block";
     return;
+  }
+  if ((proxyUser && !proxyPassword) || (!proxyUser && proxyPassword)) {
+    // 密码留空表示保持原密码（如果之前设过）
+    if (proxyUser && !proxyPassword && !(state && state.proxy_auth_enabled)) {
+      errorDivEl.textContent = "代理账号和密码必须同时填写";
+      errorDivEl.style.display = "block";
+      return;
+    }
   }
   
   if (routingMode === "fixed_region" && !forceCountry) {
@@ -6705,7 +6758,10 @@ async function saveNetwork(e) {
         force_country: forceCountry,
         routing_ip_type: routingIpType,
         check_interval_minutes: checkInterval,
-        probe_workers: probeWorkers
+        probe_workers: probeWorkers,
+        proxy_bind_host: proxyBind,
+        proxy_user: proxyUser,
+        proxy_password: proxyPassword
       })
     }, 25000);
     const data = await readJsonResponse(res, "保存代理设置失败");
@@ -7622,6 +7678,9 @@ class Handler(BaseHTTPRequestHandler):
                 routing_ip_type = str(payload.get("routing_ip_type") or "all").strip()
                 check_interval_minutes = payload.get("check_interval_minutes")
                 probe_workers = payload.get("probe_workers")
+                proxy_bind_host = str(payload.get("proxy_bind_host") or "").strip()
+                proxy_user = str(payload.get("proxy_user") or "").strip()
+                proxy_password = str(payload.get("proxy_password") or "")
                 
                 try:
                     new_proxy_port_int = int(new_proxy_port)
@@ -7654,6 +7713,17 @@ class Handler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     self.send_json({"ok": False, "error": "检测并发数必须在 1 至 20 之间"}, HTTPStatus.BAD_REQUEST)
                     return
+                if proxy_bind_host not in ("0.0.0.0", "127.0.0.1"):
+                    self.send_json({"ok": False, "error": "绑定地址只能是 0.0.0.0 或 127.0.0.1"}, HTTPStatus.BAD_REQUEST)
+                    return
+                _old_cfg = load_ui_config()
+                _old_password = str(_old_cfg.get("proxy_password") or "")
+                # 密码留空且账号有值：保持原密码（前端已提示）
+                if proxy_user and not proxy_password and _old_password:
+                    proxy_password = _old_password
+                if (proxy_user and not proxy_password) or (proxy_password and not proxy_user):
+                    self.send_json({"ok": False, "error": "代理账号和密码必须同时填写或同时留空"}, HTTPStatus.BAD_REQUEST)
+                    return
                 
                 ui_cfg = load_ui_config()
                 expected_proxy_port = ui_cfg.get("proxy_port", 7928)
@@ -7669,6 +7739,9 @@ class Handler(BaseHTTPRequestHandler):
                 ui_cfg["proxy_port"] = new_proxy_port_int
                 ui_cfg["check_interval_minutes"] = check_interval_minutes_int
                 ui_cfg["probe_workers"] = probe_workers_int
+                ui_cfg["proxy_bind_host"] = proxy_bind_host or "0.0.0.0"
+                ui_cfg["proxy_user"] = proxy_user
+                ui_cfg["proxy_password"] = proxy_password
                 ui_cfg["routing_mode"] = routing_mode
                 ui_cfg["force_country"] = force_country
                 ui_cfg["routing_ip_type"] = routing_ip_type
@@ -7677,12 +7750,22 @@ class Handler(BaseHTTPRequestHandler):
                 if routing_mode == "fixed_ip":
                     ui_cfg["fixed_node_id"] = fixed_node_id
                 
+                old_bind_host = load_ui_config().get("proxy_bind_host", "0.0.0.0")
                 auth_file = DATA_DIR / "ui_auth.json"
                 with lock:
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     write_json(auth_file, ui_cfg)
 
+                # 代理认证热生效，无需重启
+                if proxy_user and proxy_password:
+                    proxy_server.set_proxy_credentials(proxy_user, proxy_password)
+                else:
+                    proxy_server.set_proxy_credentials(None, None)
+
                 policy_message = enforce_active_node_allowed_by_routing(ui_cfg, "路由设置已更新")
+                bind_changed = (proxy_bind_host or "0.0.0.0") != old_bind_host
+                if bind_changed:
+                    policy_message = (policy_message + " " if policy_message else "") + "代理绑定地址已变更，需重启服务生效（ml restart）。" 
                 
                 restart_needed = (new_proxy_port_int != expected_proxy_port)
                 if restart_needed:
@@ -7996,7 +8079,15 @@ def main() -> None:
             "blacklisted_nodes": 0,
         },
     )
-    threading.Thread(target=proxy_server.start_proxy_server, args=(LOCAL_PROXY_HOST, LOCAL_PROXY_PORT), daemon=True).start()
+    _ui_cfg_startup = load_ui_config()
+    _bind_host = str(_ui_cfg_startup.get("proxy_bind_host") or "0.0.0.0").strip() or "0.0.0.0"
+    _p_user = str(_ui_cfg_startup.get("proxy_user") or "").strip()
+    _p_pass = str(_ui_cfg_startup.get("proxy_password") or "")
+    if _p_user and _p_pass:
+        proxy_server.set_proxy_credentials(_p_user, _p_pass)
+    else:
+        proxy_server.set_proxy_credentials(None, None)
+    threading.Thread(target=proxy_server.start_proxy_server, args=(_bind_host, LOCAL_PROXY_PORT), daemon=True).start()
     
     # Wait for the gateway to officially start
     print("[网关] 正在启动代理网关...", flush=True)
