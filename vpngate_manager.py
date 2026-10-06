@@ -5442,6 +5442,14 @@ function setNodeView(mode) {
   if (grid) grid.style.display = mode === "card" ? "" : "none";
   try { localStorage.setItem("aimili_node_view", mode); } catch (e) {}
   render();
+  // 兜底：确保卡片视图有数据（防止 render 流程异常时空白）
+  if (mode === "card") {
+    try {
+      renderNodeCards(currentPageNodes);
+    } catch (e) {
+      console.error("[setNodeView] 兜底渲染失败:", e);
+    }
+  }
 }
 (function restoreNodeView(){
   try {
@@ -5494,6 +5502,7 @@ setInterval(() => {
 function renderNodeCards(list) {
   const grid = $("nodes_grid");
   if (!grid) return;
+  console.log("[renderNodeCards] 收到节点数:", list ? list.length : "null", "viewMode:", typeof nodeViewMode !== "undefined" ? nodeViewMode : "undef");
   if (!list || list.length === 0) {
     grid.innerHTML = `<div style="grid-column: 1/-1; text-align:center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</div>`;
     return;
@@ -5771,7 +5780,11 @@ function render(){
 
   // 卡片视图同步渲染
   if (nodeViewMode === "card") {
-    renderNodeCards(currentPageNodes);
+    try {
+      renderNodeCards(currentPageNodes);
+    } catch (e) {
+      console.error("[renderNodeCards] 渲染失败:", e);
+    }
   }
   // 数据概览卡片更新
   renderStats();
