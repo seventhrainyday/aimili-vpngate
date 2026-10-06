@@ -7588,9 +7588,9 @@ function openReportModal() {
   $("report_date").value = today;
   showReportTab("daily");
   loadDailyReport();
-  openModal("report_modal");
+  showModal("report_modal");
 }
-function closeReportModal() { closeModal("report_modal"); }
+function closeReportModal() { hideModal("report_modal"); }
 
 function showReportTab(tab) {
   $("report_daily").style.display = tab === "daily" ? "" : "none";
