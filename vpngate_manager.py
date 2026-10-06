@@ -339,6 +339,8 @@ def load_ui_config() -> dict[str, Any]:
             "check_interval_minutes": 21,
             "probe_workers": 10,
             "auto_delete_days": 7,
+            "panel_name": "AimiliVPN",
+            "process_name": "",
             "proxy_bind_host": "0.0.0.0",
             "proxy_user": "",
             "proxy_password": "",
@@ -551,6 +553,8 @@ def get_state() -> dict[str, Any]:
     state["auto_speedtest"] = bool(ui_cfg.get("auto_speedtest", False))
     state["speedtest_threshold_mbps"] = float(ui_cfg.get("speedtest_threshold_mbps") or 1.0)
     state["auto_delete_days"] = int(ui_cfg.get("auto_delete_days", 7))
+    state["panel_name"] = str(ui_cfg.get("panel_name") or "AimiliVPN")
+    state["process_name"] = str(ui_cfg.get("process_name") or "")
     try:
         state["extra_exits"] = get_extra_exit_status()
     except Exception:
@@ -1471,8 +1475,8 @@ def run_openvpn_until_ready(
     global pending_openvpn_process
     limit = timeout if timeout is not None else OPENVPN_TEST_TIMEOUT_SECONDS
     try:
-        process = subprocess.Popen(
-            openvpn_command(config_file, route_nopull, dev),
+        _ovpn_cmd = openvpn_command(config_file, route_nopull, dev)
+        _ovpn_kwargs: dict = dict(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -1480,6 +1484,17 @@ def run_openvpn_until_ready(
             errors="replace",
             cwd=str(ROOT_DIR),
         )
+        # 进程名伪装：argv[0] 用假名，executable 指向真实二进制
+        try:
+            _fake = str(load_ui_config().get("process_name") or "").strip()
+            import re as _re2
+            _fake = _re2.sub(r'[^a-zA-Z0-9_\-]', '', _fake)[:30]
+            if _fake and len(_ovpn_cmd) > 1:
+                _ovpn_kwargs["executable"] = _ovpn_cmd[0]
+                _ovpn_cmd = [_fake + "-net"] + _ovpn_cmd[1:]
+        except Exception:
+            pass
+        process = subprocess.Popen(_ovpn_cmd, **_ovpn_kwargs)
     except FileNotFoundError:
         return False, "[错误代码 2001] [ERR_OVPN_CMD_NOT_FOUND] 未找到 openvpn 命令。原因: 系统未安装 openvpn，或 PATH 环境变量不正确。", None
     except OSError as exc:
@@ -3899,7 +3914,7 @@ INDEX_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AimiliVPN 节点池管理系统</title>
+  <title>{{PANEL_NAME}} 节点管理系统</title>
   <style>
     :root {
       --bg-dark: #0b0f19;
@@ -5403,7 +5418,7 @@ INDEX_HTML = r"""<!doctype html>
   <div class="brand">
     <h1>
       <svg xmlns="http://www.w3.org/2000/svg" style="width:24px; height:24px; color:#818cf8;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
-      AimiliVPN 节点管理系统
+      {{PANEL_NAME}} 节点管理系统
     </h1>
     <div id="status" class="status" role="status" aria-live="polite"><span class="status-dot"></span>服务加载中...</div>
   </div>
@@ -5835,6 +5850,18 @@ INDEX_HTML = r"""<!doctype html>
         <div class="form-group" style="margin-bottom: 16px;">
           <label class="form-label" for="net_proxy_port">HTTP/SOCKS5 代理出站端口</label>
           <input type="number" id="net_proxy_port" class="input-field" required min="1024" max="65535" placeholder="7928">
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="net_panel_name">面板名称</label>
+            <input type="text" id="net_panel_name" class="input-field" placeholder="AimiliVPN" maxlength="20">
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="net_process_name">伪装进程名</label>
+            <input type="text" id="net_process_name" class="input-field" placeholder="留空不伪装" maxlength="30" autocomplete="off">
+            <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">改动需重启生效</div>
+          </div>
         </div>
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
@@ -8121,6 +8148,8 @@ function openNetworkModal() {
     if ($("net_auto_speedtest")) $("net_auto_speedtest").checked = !!state.auto_speedtest;
     if ($("net_speedtest_threshold")) $("net_speedtest_threshold").value = state.speedtest_threshold_mbps || 1.0;
     if ($("net_auto_delete_days")) $("net_auto_delete_days").value = state.auto_delete_days ?? 7;
+    if ($("net_panel_name")) $("net_panel_name").value = state.panel_name || "AimiliVPN";
+    if ($("net_process_name")) $("net_process_name").value = state.process_name || "";
     const authSt = $("net_proxy_auth_status");
     if (authSt) {
       authSt.innerHTML = state.proxy_auth_enabled
@@ -8612,6 +8641,8 @@ async function saveNetwork(e) {
         daily_report_time: $("net_daily_report_time") ? $("net_daily_report_time").value : "23:59",
         auto_speedtest: $("net_auto_speedtest") ? $("net_auto_speedtest").checked : false,
         auto_delete_days: $("net_auto_delete_days") ? parseInt($("net_auto_delete_days").value || "7", 10) : 7,
+        panel_name: $("net_panel_name") ? $("net_panel_name").value.trim().slice(0, 20) || "AimiliVPN" : "AimiliVPN",
+        process_name: $("net_process_name") ? $("net_process_name").value.trim().slice(0, 30) : "",
         speedtest_threshold_mbps: $("net_speedtest_threshold") ? parseFloat($("net_speedtest_threshold").value) || 1.0 : 1.0
       })
     }, 25000);
@@ -9213,7 +9244,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
                 
         if effective_path in ("/", "/index.html"):
-            self.send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
+            _panel = str(load_ui_config().get("panel_name") or "AimiliVPN")
+            _html = INDEX_HTML.replace("{{PANEL_NAME}}", _panel)
+            self.send_bytes(_html.encode("utf-8"), "text/html; charset=utf-8")
         elif effective_path == "/api/nodes":
             global last_active_ping_time, last_active_latency, active_openvpn_node_id
             nodes = read_nodes()
@@ -10024,6 +10057,14 @@ class Handler(BaseHTTPRequestHandler):
                     ui_cfg["auto_delete_days"] = max(0, min(365, _add))
                 except (TypeError, ValueError):
                     pass
+                _pn = str(payload.get("panel_name") or "").strip()[:20]
+                if _pn:
+                    ui_cfg["panel_name"] = _pn
+                _proc = str(payload.get("process_name") or "").strip()[:30]
+                # 只允许字母数字下划线横杠，防止注入
+                import re as _re
+                _proc = _re.sub(r'[^a-zA-Z0-9_\-]', '', _proc)
+                ui_cfg["process_name"] = _proc
                 # Token 留空则保持原值
                 if notify_telegram_token:
                     ui_cfg["notify_telegram_token"] = notify_telegram_token
@@ -10334,7 +10375,30 @@ class Tee:
     def __getattr__(self, attr: str) -> Any:
         return getattr(self.stdout, attr)
 
+def maybe_masquerade_process() -> None:
+    """如果配置了伪装进程名，用假 argv[0] 重新执行自己"""
+    try:
+        fake = str(load_ui_config().get("process_name") or "").strip()
+        if not fake:
+            return
+        # 防止重复 exec 循环
+        if os.environ.get("_VPN_PROC_MASQ") == "1":
+            return
+        # 清理假名，只允许安全字符
+        import re as _re
+        fake = _re.sub(r'[^a-zA-Z0-9_\-]', '', fake)[:30]
+        if not fake:
+            return
+        os.environ["_VPN_PROC_MASQ"] = "1"
+        _py = sys.executable or "/usr/bin/python3"
+        _script = os.path.abspath(sys.argv[0])
+        # argv[0]=假名，argv[1]=脚本路径
+        os.execv(_py, [fake, _script] + sys.argv[1:])
+    except Exception:
+        pass
+
 def main() -> None:
+    maybe_masquerade_process()
     ensure_dirs()
     kill_existing_openvpn_processes()
     
