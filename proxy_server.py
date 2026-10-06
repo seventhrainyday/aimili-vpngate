@@ -192,7 +192,7 @@ def dns_query_over_tun0(host: str, qtype: int, dns_server: str, timeout: float, 
         return None
     return None
 
-def resolve_dns_over_tun0(host: str, dns_server: str = "8.8.8.8", timeout: float = 3.0) -> str | None:
+def resolve_dns_over_tun0(host: str, dns_server: str = "8.8.8.8", timeout: float = 3.0, device: str = "tun0") -> str | None:
     try:
         socket.inet_aton(host)
         return host
@@ -203,11 +203,11 @@ def resolve_dns_over_tun0(host: str, dns_server: str = "8.8.8.8", timeout: float
         return host
     except OSError:
         pass
-    return dns_query_over_tun0(host, 1, dns_server, timeout) or dns_query_over_tun0(host, 28, dns_server, timeout)
+    return dns_query_over_tun0(host, 1, dns_server, timeout, device) or dns_query_over_tun0(host, 28, dns_server, timeout, device)
 
-def create_connection(address: tuple[str, int], timeout: float = 20) -> socket.socket:
+def create_connection(address: tuple[str, int], timeout: float = 20, device: str = "tun0") -> socket.socket:
     host, port = address
-    resolved_ip = resolve_dns_over_tun0(host)
+    resolved_ip = resolve_dns_over_tun0(host, device=device)
     if resolved_ip:
         host = resolved_ip
 
