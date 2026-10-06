@@ -3782,7 +3782,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
     function apiUrl(path) { return apiBase() + path; }
     // 实时流量曲线
     const _trafficHist = {rx: [], tx: []};
-    const _TRAFFIC_MAX_POINTS = 60;
+    const _TRAFFIC_MAX_POINTS = 150;
     function fmtRate(bps) {
       if (bps < 1024) return bps.toFixed(0) + " B/s";
       if (bps < 1048576) return (bps/1024).toFixed(1) + " KB/s";
@@ -5226,6 +5226,73 @@ INDEX_HTML = r"""<!doctype html>
         align-items: flex-start;
       }
     }
+    /* 底部导航栏 */
+    .nav-tab {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 10px 0 8px;
+      cursor: pointer;
+      font-size: 11px;
+      transition: color 0.2s;
+    }
+    .nav-tab svg {
+      width: 22px;
+      height: 22px;
+    }
+    .nav-tab.active {
+      color: var(--primary);
+    }
+    .nav-tab:active {
+      opacity: 0.7;
+    }
+    /* 设置分组 Tab */
+    .settings-tab {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 14px;
+      padding: 8px 16px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -13px;
+      transition: all 0.2s;
+    }
+    .settings-tab.active {
+      color: var(--primary);
+      border-bottom-color: var(--primary);
+      font-weight: 600;
+    }
+    .settings-tab:hover {
+      color: var(--text-primary);
+    }
+    /* 我的页面菜单项 */
+    .menu-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 14px 16px;
+      color: var(--text-primary);
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .menu-item:hover {
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .menu-item span:last-child {
+      color: var(--text-secondary);
+      font-size: 18px;
+    }
     
     /* Inputs in settings */
     .form-group {
@@ -5416,7 +5483,9 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </div>
 </header>
-<main>
+<main style="padding-bottom: 80px;">
+  <!-- 首页视图 -->
+  <div id="view-home">
   <!-- 数据概览 -->
   <div class="stats-grid" id="stats_grid">
     <div class="stat-card" style="--accent: #34d399;">
@@ -5472,7 +5541,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="stat-body" style="flex: 1; min-width: 0;">
         <div class="stat-value" id="traffic_rate_text" style="font-size: 13px; white-space: nowrap;">-</div>
         <div class="stat-label"><span style="color: #34d399;">●</span> 下载 <span style="color: #f59e0b;">●</span> 上传</div>
-        <canvas id="traffic_chart" width="200" height="40" style="width: 100%; height: 40px; display: block; margin-top: 2px;"></canvas>
+        <canvas id="traffic_chart" width="200" height="40" style="width: 100%; height: 40px; display: block; margin-top: 2px; cursor: pointer;" onclick="showTrafficModal()" title="点击查看大图"></canvas>
       </div>
     </div>
   </div>
@@ -5481,9 +5550,10 @@ INDEX_HTML = r"""<!doctype html>
     <section class="active-node-section" id="active_node_card" style="margin-bottom: 24px;">
       <!-- Rendered dynamically by render() -->
     </section>
+  </div><!-- /view-home -->
 
-
-
+  <!-- 节点视图 -->
+  <div id="view-nodes" style="display: none;">
   <section class="toolbar">
     <select id="status_filter">
       <option value="all">全部节点</option>
@@ -5608,6 +5678,88 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
   </div>
+  </div><!-- /view-nodes -->
+
+  <!-- 出口视图 -->
+  <div id="view-exits" style="display: none;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+      <h2 style="margin: 0; font-size: 18px; font-weight: 700;">多出口管理</h2>
+      <button type="button" class="btn-primary" onclick="showExitsModal()" style="height: 38px; padding: 0 16px;">管理出口</button>
+    </div>
+    <div id="exits_inline_list" style="display: grid; gap: 12px;">
+      <div style="text-align: center; color: var(--text-secondary); padding: 40px 20px; font-size: 14px;">
+        点击"管理出口"查看和配置多出口
+      </div>
+    </div>
+  </div><!-- /view-exits -->
+
+  <!-- 我的视图 -->
+  <div id="view-profile" style="display: none;">
+    <h2 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 700;">设置</h2>
+    <div style="display: grid; gap: 10px;">
+      <button type="button" class="menu-item" onclick="showNetworkModal()">
+        <span>⚙️ 代理设置</span><span>›</span>
+      </button>
+      <button type="button" class="menu-item" onclick="showDiagnosticsModal()">
+        <span>🔍 一键诊断</span><span>›</span>
+      </button>
+      <button type="button" class="menu-item" onclick="showBlacklistModal()">
+        <span>🚫 黑名单管理</span><span>›</span>
+      </button>
+      <button type="button" class="menu-item" onclick="showDailyReportModal()">
+        <span>📊 日报与历史</span><span>›</span>
+      </button>
+      <button type="button" class="menu-item" onclick="showLogsModal()">
+        <span>📝 运行日志</span><span>›</span>
+      </button>
+      <button type="button" class="menu-item" onclick="showCredentialsModal()">
+        <span>🔐 网页安全</span><span>›</span>
+      </button>
+      <button type="button" class="menu-item" onclick="logout()" style="color: var(--danger);">
+        <span>🚪 退出登录</span><span>›</span>
+      </button>
+    </div>
+    <div style="text-align: center; margin-top: 24px; color: var(--text-secondary); font-size: 12px;">
+      AimiliVPN v2.1.5
+    </div>
+  </div><!-- /view-profile -->
+
+  <!-- 流量大图 Modal -->
+  <div id="traffic_modal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="modal-content" tabindex="-1" style="max-width: 640px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; font-size: 18px; font-weight: 700;">实时流量（5分钟）</h3>
+        <button type="button" onclick="hideTrafficModal()" style="background: transparent; border: none; color: var(--text-secondary); font-size: 20px; cursor: pointer; padding: 4px;">✕</button>
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 16px; margin-bottom: 8px; font-size: 12px; color: var(--text-secondary);">
+        <span><span style="color: #34d399;">●</span> 下载</span>
+        <span><span style="color: #f59e0b;">●</span> 上传</span>
+      </div>
+      <canvas id="traffic_chart_large" width="600" height="220" style="width: 100%; height: 220px; display: block; background: rgba(0,0,0,0.2); border-radius: 8px;"></canvas>
+      <div id="traffic_large_text" style="text-align: center; margin-top: 12px; font-size: 14px; color: var(--text-primary);">-</div>
+      <div style="text-align: center; margin-top: 8px; font-size: 11px; color: var(--text-secondary);">最近5分钟 · 每2秒采样</div>
+    </div>
+  </div>
+
+  <!-- 底部导航栏 -->
+  <nav id="bottom_nav" style="position: fixed; bottom: 0; left: 0; right: 0; background: rgba(15, 23, 42, 0.98); border-top: 1px solid var(--border-color); display: flex; z-index: 1000; padding-bottom: env(safe-area-inset-bottom);">
+    <button type="button" class="nav-tab active" data-view="home" onclick="switchTab('home')">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+      <span>首页</span>
+    </button>
+    <button type="button" class="nav-tab" data-view="nodes" onclick="switchTab('nodes')">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+      <span>节点</span>
+    </button>
+    <button type="button" class="nav-tab" data-view="exits" onclick="switchTab('exits')">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+      <span>出口</span>
+    </button>
+    <button type="button" class="nav-tab" data-view="profile" onclick="switchTab('profile')">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+      <span>我的</span>
+    </button>
+  </nav>
 
   <!-- Credentials Modal (网页安全设置) -->
   <div id="credentials_modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="credentials_modal_title" aria-hidden="true">
@@ -5671,6 +5823,14 @@ INDEX_HTML = r"""<!doctype html>
       <div id="network_success" role="status" aria-live="polite" style="color: var(--success); font-size: 13px; margin-bottom: 16px; padding: 8px 12px; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.2); border-radius: 6px; display: none;"></div>
 
       <form id="network_form" onsubmit="saveNetwork(event)">
+        <!-- 设置分组 Tab -->
+        <div style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px;">
+          <button type="button" class="settings-tab active" data-tab="proxy" onclick="switchSettingsTab('proxy')">代理</button>
+          <button type="button" class="settings-tab" data-tab="routing" onclick="switchSettingsTab('routing')">路由</button>
+          <button type="button" class="settings-tab" data-tab="notify" onclick="switchSettingsTab('notify')">通知</button>
+          <button type="button" class="settings-tab" data-tab="cleanup" onclick="switchSettingsTab('cleanup')">检测清理</button>
+        </div>
+        <div id="settings-tab-proxy">
         <div class="form-group" style="margin-bottom: 16px;">
           <label class="form-label" for="net_proxy_port">HTTP/SOCKS5 代理出站端口</label>
           <input type="number" id="net_proxy_port" class="input-field" required min="1024" max="65535" placeholder="7928">
@@ -5690,8 +5850,10 @@ INDEX_HTML = r"""<!doctype html>
             <div id="net_proxy_auth_status" style="font-size: 13px; padding: 8px 0; color: var(--text-secondary);">-</div>
           </div>
         </div>
+        </div><!-- /settings-tab-proxy -->
 
-        <div style="border-top: 1px solid var(--border-color); margin: 20px 0 16px 0; padding-top: 16px;">
+        <div id="settings-tab-notify" style="display: none;">
+        <div style="margin-bottom: 16px;">
           <div style="font-weight: 600; margin-bottom: 12px; font-size: 14px;">断线通知推送</div>
           <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; cursor: pointer; font-size: 13px;">
             <input type="checkbox" id="net_notify_enabled" style="accent-color: var(--primary);"> 启用断线/切换通知
@@ -5732,7 +5894,10 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>
 
-        <div style="border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 16px; margin-bottom: 16px;">
+        </div><!-- /settings-tab-notify -->
+
+        <div id="settings-tab-cleanup" style="display: none;">
+        <div style="margin-bottom: 16px;">
           <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px;">节点检测设置</div>
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
             <div class="form-group" style="margin-bottom: 0;">
@@ -5746,9 +5911,19 @@ INDEX_HTML = r"""<!doctype html>
               <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">同时检测几个节点，越高越快但越耗资源</div>
             </div>
           </div>
+          <div class="form-group" style="margin-top: 16px; margin-bottom: 0;">
+            <label class="form-label">长期不可用自动删除</label>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span style="font-size: 12px; color: var(--text-secondary); white-space: nowrap;">连续</span>
+              <input type="number" id="net_auto_delete_days" class="input-field" min="0" max="365" step="1" value="7" style="width: 70px; flex-shrink: 0;">
+              <span style="font-size: 12px; color: var(--text-secondary);">天不可用自动删除（0 表示不删除）</span>
+            </div>
+          </div>
         </div>
+        </div><!-- /settings-tab-cleanup -->
 
-        <div style="border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 16px; margin-bottom: 16px;">
+        <div id="settings-tab-routing" style="display: none;">
+        <div style="margin-bottom: 16px;">
           <div class="form-group" style="margin-bottom: 16px;">
             <label class="form-label">IP 出站路由模式</label>
             <input type="hidden" id="net_routing_mode" value="auto">
@@ -5810,15 +5985,8 @@ INDEX_HTML = r"""<!doctype html>
             </div>
           </div>
 
-          <div class="form-group" style="margin-top: 16px;">
-            <label class="form-label">长期不可用自动删除</label>
-            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <span style="font-size: 12px; color: var(--text-secondary); white-space: nowrap;">连续</span>
-              <input type="number" id="net_auto_delete_days" class="input-field" min="0" max="365" step="1" value="7" style="width: 70px; flex-shrink: 0;">
-              <span style="font-size: 12px; color: var(--text-secondary);">天不可用自动删除（0 表示不删除）</span>
-            </div>
-          </div>
         </div>
+        </div><!-- /settings-tab-routing -->
         
         <div style="display: flex; gap: 12px; justify-content: flex-end;">
           <button type="button" onclick="closeNetworkModal()" style="height: 40px; padding: 0 16px; font-weight: 600; border-radius: 8px; border: 1px solid var(--border-color); background: transparent; color: var(--text-secondary); cursor: pointer;">取消</button>
@@ -6101,9 +6269,91 @@ function apiBase() {
   return m ? "/" + m[1] : "";
 }
 function apiUrl(path) { return apiBase() + path; }
+    // 流量大图
+    function showTrafficModal() {
+      showModal("traffic_modal");
+      drawTrafficLarge();
+    }
+    function hideTrafficModal() {
+      hideModal("traffic_modal");
+    }
+    function drawTrafficLarge() {
+      const cv = $("traffic_chart_large");
+      if (!cv) return;
+      const dpr = window.devicePixelRatio || 1;
+      const rectW = cv.clientWidth || 600;
+      const rectH = cv.clientHeight || 220;
+      if (cv.width !== Math.round(rectW * dpr)) {
+        cv.width = Math.round(rectW * dpr);
+        cv.height = Math.round(rectH * dpr);
+      }
+      const ctx = cv.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const W = rectW, H = rectH;
+      ctx.clearRect(0, 0, W, H);
+      // 网格线
+      ctx.strokeStyle = "rgba(255,255,255,0.05)";
+      ctx.lineWidth = 1;
+      for (let i = 1; i < 4; i++) {
+        const y = (H / 4) * i;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+      }
+      const all = _trafficHist.rx.concat(_trafficHist.tx);
+      const maxV = Math.max(1, ...all);
+      // Y轴标签
+      ctx.fillStyle = "rgba(255,255,255,0.4)";
+      ctx.font = "10px sans-serif";
+      ctx.fillText(fmtRate(maxV), 4, 12);
+      ctx.fillText("0", 4, H - 4);
+      const draw = (data, color) => {
+        if (data.length < 2) return;
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        data.forEach((v, i) => {
+          const x = (i / (_TRAFFIC_MAX_POINTS - 1)) * W;
+          const y = H - (v / maxV) * (H - 20) - 10;
+          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      };
+      draw(_trafficHist.rx, "#34d399");
+      draw(_trafficHist.tx, "#f59e0b");
+      const lt = $("traffic_large_text");
+      if (lt && _trafficHist.rx.length) {
+        const lastRx = _trafficHist.rx[_trafficHist.rx.length - 1];
+        const lastTx = _trafficHist.tx[_trafficHist.tx.length - 1];
+        lt.textContent = `↓ ${fmtRate(lastRx)}   ↑ ${fmtRate(lastTx)}`;
+      }
+    }
+    // 设置分组 Tab 切换
+    function switchSettingsTab(tab) {
+      ["proxy", "routing", "notify", "cleanup"].forEach(t => {
+        const el = $("settings-tab-" + t);
+        if (el) el.style.display = t === tab ? "" : "none";
+      });
+      document.querySelectorAll(".settings-tab").forEach(b => {
+        b.classList.toggle("active", b.dataset.tab === tab);
+      });
+    }
+    // 底部导航切换
+    function switchTab(view) {
+      ["home", "nodes", "exits", "profile"].forEach(v => {
+        const el = $("view-" + v);
+        if (el) el.style.display = v === view ? "" : "none";
+      });
+      document.querySelectorAll(".nav-tab").forEach(t => {
+        t.classList.toggle("active", t.dataset.view === view);
+      });
+      window.scrollTo(0, 0);
+      // 切换到出口时刷新列表
+      if (view === "exits" && typeof loadExitsInline === "function") {
+        loadExitsInline();
+      }
+    }
     // 实时流量曲线
     const _trafficHist = {rx: [], tx: []};
-    const _TRAFFIC_MAX_POINTS = 60;
+    const _TRAFFIC_MAX_POINTS = 150;
     function fmtRate(bps) {
       if (bps < 1024) return bps.toFixed(0) + " B/s";
       if (bps < 1048576) return (bps/1024).toFixed(1) + " KB/s";
@@ -6153,6 +6403,9 @@ function apiUrl(path) { return apiBase() + path; }
           if (_trafficHist.rx.length > _TRAFFIC_MAX_POINTS) _trafficHist.rx.shift();
           if (_trafficHist.tx.length > _TRAFFIC_MAX_POINTS) _trafficHist.tx.shift();
           drawTrafficChart();
+          // 大图开着时同步重绘
+          const tm = $("traffic_modal");
+          if (tm && tm.classList.contains("show")) drawTrafficLarge();
           const rateText = $("traffic_rate_text");
           if (rateText) rateText.textContent = `↓ ${fmtRate(r.rx_rate)}   ↑ ${fmtRate(r.tx_rate)}`;
         }
