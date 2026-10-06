@@ -5725,6 +5725,8 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           
           <div id="net_routing_warning" style="font-size: 12px; color: var(--text-secondary); line-height: 1.4; padding: 8px 12px; background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 6px; margin-top: 8px;">
+            ℹ️ <strong>自动配置</strong>：全自动测试并选择最佳IP。在使用过程中，如果当前连接节点没有失效，将不再更换IP；如果当前节点失效，系统将立刻秒级自动漂移到其他最快的可用节点。
+          </div>
 
           <div class="form-group" style="margin-top: 16px;">
             <label class="form-label">连接后自动测速</label>
@@ -5737,7 +5739,6 @@ INDEX_HTML = r"""<!doctype html>
               <span style="font-size: 12px; color: var(--text-secondary);">Mbps（低于此值自动切换）</span>
             </div>
           </div>
-            ℹ️ <strong>自动配置</strong>：全自动测试并选择最佳IP。在使用过程中，如果当前连接节点没有失效，将不再更换IP；如果当前节点失效，系统将立刻秒级自动漂移到其他最快的可用节点。
           </div>
         </div>
         
