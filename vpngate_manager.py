@@ -3615,6 +3615,8 @@ LOGIN_HTML = r"""<!DOCTYPE html>
     }
 
     .form-label {
+      word-break: keep-all;
+      overflow-wrap: normal;
       display: block;
       font-size: 13px;
       font-weight: 500;
@@ -6048,6 +6050,64 @@ function apiBase() {
   return m ? "/" + m[1] : "";
 }
 function apiUrl(path) { return apiBase() + path; }
+    // 实时流量曲线
+    const _trafficHist = {rx: [], tx: []};
+    const _TRAFFIC_MAX_POINTS = 60;
+    function fmtRate(bps) {
+      if (bps < 1024) return bps.toFixed(0) + " B/s";
+      if (bps < 1048576) return (bps/1024).toFixed(1) + " KB/s";
+      return (bps/1048576).toFixed(2) + " MB/s";
+    }
+    function drawTrafficChart() {
+      const cv = $("traffic_chart");
+      if (!cv) return;
+      const dpr = window.devicePixelRatio || 1;
+      const rectW = cv.clientWidth || 600;
+      const rectH = cv.clientHeight || 90;
+      if (cv.width !== Math.round(rectW * dpr)) {
+        cv.width = Math.round(rectW * dpr);
+        cv.height = Math.round(rectH * dpr);
+      }
+      const ctx = cv.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const W = rectW, H = rectH;
+      ctx.clearRect(0, 0, W, H);
+      const all = _trafficHist.rx.concat(_trafficHist.tx);
+      const maxV = Math.max(1, ...all);
+      const draw = (data, color) => {
+        if (data.length < 2) return;
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        data.forEach((v, i) => {
+          const x = (i / (_TRAFFIC_MAX_POINTS - 1)) * W;
+          const y = H - (v / maxV) * (H - 4) - 2;
+          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      };
+      draw(_trafficHist.rx, "#34d399");
+      draw(_trafficHist.tx, "#f59e0b");
+    }
+    async function pollTrafficRate() {
+      try {
+        const resp = await fetchWithTimeout(apiUrl("/api/traffic_rate"), {}, 8000);
+        const data = await resp.json();
+        if (!data.ok) return;
+        const mainPort = String((typeof state !== "undefined" && state.proxy_port) || 7928);
+        const r = data.rates[mainPort];
+        if (r) {
+          _trafficHist.rx.push(r.rx_rate);
+          _trafficHist.tx.push(r.tx_rate);
+          if (_trafficHist.rx.length > _TRAFFIC_MAX_POINTS) _trafficHist.rx.shift();
+          if (_trafficHist.tx.length > _TRAFFIC_MAX_POINTS) _trafficHist.tx.shift();
+          drawTrafficChart();
+          const rateText = $("traffic_rate_text");
+          if (rateText) rateText.textContent = `↓ ${fmtRate(r.rx_rate)}   ↑ ${fmtRate(r.tx_rate)}`;
+        }
+      } catch (e) { /* 静默 */ }
+    }
+    setInterval(pollTrafficRate, 2000);
 function fetchWithTimeout(resource, options = {}, timeoutMs = 20000) {
   if (typeof AbortController === "undefined") return fetch(resource, options);
   const controller = new AbortController();
