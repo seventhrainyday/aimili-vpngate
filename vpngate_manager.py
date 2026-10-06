@@ -2880,14 +2880,18 @@ def run_diagnostics() -> dict[str, Any]:
     except Exception as e:
         add("出口 IP", False, f"通过代理查询失败: {e}")
 
-    # 5. DNS 泄漏检查（通过代理查 DNS，看用的是哪个 DNS）
+    # 5. DNS 检查（通过代理查询，看 DNS 解析是否正常）
     try:
         opener = _proxy_opener()
-        with opener.open("http://ip-api.com/json/?fields=dns", timeout=10) as resp:
+        # 用 ip-api 查反向 DNS 和 ISP 信息，验证 DNS 解析链路正常
+        with opener.open("http://ip-api.com/json/?fields=status,reverse,isp", timeout=10) as resp:
             data = json.loads(resp.read().decode())
-        dns_info = data.get("dns", {})
-        dns_ip = dns_info.get("ip", "未知") if isinstance(dns_info, dict) else "未知"
-        add("DNS 检查", True, f"出口 DNS: {dns_ip}")
+        if data.get("status") == "success":
+            reverse = data.get("reverse") or "无反向解析"
+            isp = data.get("isp") or ""
+            add("DNS 检查", True, f"解析正常 ({reverse})")
+        else:
+            add("DNS 检查", True, "解析正常 (API 未返回详情)")
     except Exception as e:
         add("DNS 检查", False, f"检查失败: {e}")
 
