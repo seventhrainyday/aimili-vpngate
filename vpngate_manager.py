@@ -10126,7 +10126,10 @@ class Handler(BaseHTTPRequestHandler):
                 if bind_changed:
                     policy_message = (policy_message + " " if policy_message else "") + "代理绑定地址已变更，需重启服务生效（ml restart）。" 
                 
-                restart_needed = (new_proxy_port_int != expected_proxy_port)
+                try:
+                    restart_needed = (new_proxy_port_int != int(expected_proxy_port))
+                except (TypeError, ValueError):
+                    restart_needed = True
                 if restart_needed:
                     self.send_json({"ok": True, "restart_needed": True, "message": "配置更新成功，代理出站端口变更，将在 2 秒内重启..."})
                     
