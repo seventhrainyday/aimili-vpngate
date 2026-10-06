@@ -1700,11 +1700,11 @@ def connection_ready_for_ui(state: dict[str, Any] | None = None) -> bool:
         and not current.get("is_connecting")
     )
 
-def send_notify(title: str, body: str = "") -> None:
+def send_notify(title: str, body: str = "", force: bool = False) -> None:
     """发送断线/切换通知到 Bark / Telegram（配置在 ui_config）"""
     try:
         ui_cfg = load_ui_config()
-        if not ui_cfg.get("notify_enabled"):
+        if not force and not ui_cfg.get("notify_enabled"):
             return
         import urllib.request
         import urllib.parse
@@ -9662,7 +9662,7 @@ class Handler(BaseHTTPRequestHandler):
 
         elif effective_path == "/api/notify_test":
             try:
-                send_notify("🔔 测试通知", "AimiliVPN 通知推送配置正常")
+                send_notify("🔔 测试通知", "AimiliVPN 通知推送配置正常", force=True)
                 self.send_json({"ok": True, "message": "测试通知已发送"})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
