@@ -547,6 +547,8 @@ def get_state() -> dict[str, Any]:
     state["notify_telegram_chat_id"] = ui_cfg.get("notify_telegram_chat_id", "")
     state["notify_telegram_configured"] = bool(ui_cfg.get("notify_telegram_token"))
     state["daily_report_time"] = ui_cfg.get("daily_report_time", "23:59")
+    state["auto_speedtest"] = bool(ui_cfg.get("auto_speedtest", False))
+    state["speedtest_threshold_mbps"] = float(ui_cfg.get("speedtest_threshold_mbps") or 1.0)
     try:
         state["extra_exits"] = get_extra_exit_status()
     except Exception:
@@ -1876,6 +1878,34 @@ def daily_report_loop() -> None:
         except Exception as e:
             print(f"[日报] 异常: {e}", flush=True)
 
+STABLE_MINUTES = 30  # 连续在线超过30分钟视为稳定节点
+
+def check_and_mark_stable_nodes() -> None:
+    """检查当前活动节点是否达到稳定标准，达标则标记"""
+    try:
+        st = get_state()
+        node_id = st.get("active_openvpn_node_id", "")
+        connected_since = float(st.get("connected_since") or 0)
+        if not node_id or not connected_since:
+            return
+        if time.time() - connected_since < STABLE_MINUTES * 60:
+            return
+        nodes = read_nodes()
+        changed = False
+        for n in nodes:
+            if n.get("id") == node_id and not n.get("is_stable"):
+                n["is_stable"] = True
+                n["stable_marked_at"] = time.time()
+                changed = True
+                log_to_json("INFO", "稳定节点", f"节点 {n.get('name', node_id)} 连续在线超 {STABLE_MINUTES} 分钟，加入稳定名单")
+        if changed:
+            save_nodes(nodes)
+    except Exception as e:
+        print(f"[稳定节点] 检查失败: {e}", flush=True)
+
+def is_stable_node(node: dict[str, Any]) -> bool:
+    return bool(node.get("is_stable"))
+
 def badge_rank(node: dict[str, Any]) -> int:
     """中文徽章评级排序权重（与前端 ipScore 逻辑一致），越小越好"""
     quality = str(node.get("quality") or "")
@@ -1900,6 +1930,7 @@ def sort_all_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     available_nodes = sorted(
         [n for n in nodes if n.get("probe_status") == "available" or n.get("active")],
         key=lambda n: (
+            0 if is_stable_node(n) else 1,
             badge_rank(n),
             -float(n.get("last_seen_at") or 0),
             -parse_int(n.get("score")),
@@ -2458,8 +2489,9 @@ def auto_switch_node(attempt: int = 0) -> None:
         ]
         candidates = apply_routing_filters(candidates, ui_cfg)
 
-        # 与列表排序一致：徽章评级 → 拉取时间(新优先) → 评分 → 延迟 → 住宅/移动
+        # 与列表排序一致：稳定节点 → 徽章评级 → 拉取时间(新优先) → 评分 → 延迟 → 住宅/移动
         candidates.sort(key=lambda n: (
+            0 if is_stable_node(n) else 1,
             badge_rank(n),
             -float(n.get("last_seen_at") or 0),
             -parse_int(n.get("score")),
@@ -2718,8 +2750,9 @@ def auto_switch_exit(exit_id: str) -> str:
             candidates = [n for n in candidates if n.get("ip_type") in ("residential", "mobile")]
         elif routing_ip_type == "hosting":
             candidates = [n for n in candidates if n.get("ip_type") == "hosting"]
-        # 排序：徽章 → 拉取时间 → 评分 → 延迟
+        # 排序：稳定节点 → 徽章 → 拉取时间 → 评分 → 延迟
         candidates.sort(key=lambda n: (
+            0 if is_stable_node(n) else 1,
             badge_rank(n),
             -float(n.get("last_seen_at") or 0),
             -parse_int(n.get("score")),
@@ -2740,6 +2773,109 @@ def auto_switch_exit(exit_id: str) -> str:
     # 重启出口
     stop_extra_exit(exit_id)
     return start_extra_exit(exit_id)
+
+def auto_speedtest_after_connect(node_id: str, node_name: str = "") -> None:
+    """连接成功后自动测速，不达标则触发切换"""
+    try:
+        ui_cfg = load_ui_config()
+        if not ui_cfg.get("auto_speedtest"):
+            return
+        threshold = float(ui_cfg.get("speedtest_threshold_mbps") or 1.0)
+        # 等待代理就绪
+        time.sleep(10)
+        # 确认还是同一个节点（防止测速时已切换）
+        st = get_state()
+        if st.get("active_openvpn_node_id") != node_id:
+            return
+        log_to_json("INFO", "自动测速", f"连接后自动测速（阈值 {threshold} Mbps）...")
+        result = test_proxy_speed()
+        speed_mbps = float(result.get("speed_mbps") or 0)
+        log_to_json("INFO", "自动测速", f"测速结果: {speed_mbps} Mbps")
+        if speed_mbps > 0 and speed_mbps < threshold:
+            log_to_json("WARNING", "自动测速", f"速度 {speed_mbps} Mbps 低于阈值 {threshold} Mbps，触发切换")
+            send_notify("🐌 速度不达标", f"节点 {node_name or node_id} 测速 {speed_mbps} Mbps，低于阈值，正在切换")
+            # 异步触发切换，避免阻塞
+            threading.Thread(target=lambda: auto_switch_node(f"测速不达标({speed_mbps}Mbps)"), daemon=True).start()
+    except Exception as e:
+        print(f"[自动测速] 异常: {e}", flush=True)
+
+def run_diagnostics() -> dict[str, Any]:
+    """一键诊断：检查 VPN/隧道/代理/出口IP/DNS"""
+    results = []
+    def add(name: str, ok: bool, detail: str = ""):
+        results.append({"name": name, "ok": ok, "detail": detail})
+
+    # 1. OpenVPN 进程
+    try:
+        proc_alive = active_openvpn_process is not None and active_openvpn_process.poll() is None
+        add("OpenVPN 进程", proc_alive, "运行中" if proc_alive else "未运行")
+    except Exception as e:
+        add("OpenVPN 进程", False, str(e))
+
+    # 2. 隧道接口
+    try:
+        import subprocess
+        r = subprocess.run(["ip", "link", "show", "tun0"], capture_output=True, text=True, timeout=5)
+        tun_ok = r.returncode == 0 and "tun0" in r.stdout
+        add("隧道接口 tun0", tun_ok, "存在" if tun_ok else "不存在")
+    except Exception as e:
+        add("隧道接口 tun0", False, str(e))
+
+    # 3. 代理端口
+    try:
+        import socket
+        port = int(load_ui_config().get("proxy_port", 7928))
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(3)
+        s.connect(("127.0.0.1", port))
+        s.close()
+        add(f"代理端口 {port}", True, "监听正常")
+    except Exception as e:
+        add("代理端口", False, f"连接失败: {e}")
+
+    # 4. 出口 IP（通过代理）
+    try:
+        import urllib.request
+        port = int(load_ui_config().get("proxy_port", 7928))
+        proxy = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}", "https": f"http://127.0.0.1:{port}"})
+        opener = urllib.request.build_opener(proxy)
+        opener.addheaders = [("User-Agent", "Mozilla/5.0")]
+        with opener.open("http://ip-api.com/json/?fields=status,country,query,isp", timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        if data.get("status") == "success":
+            add("出口 IP", True, f"{data.get('query')} ({data.get('country')}, {data.get('isp')})")
+        else:
+            add("出口 IP", False, "查询失败")
+    except Exception as e:
+        add("出口 IP", False, f"通过代理查询失败: {e}")
+
+    # 5. DNS 泄漏检查（通过代理查 DNS，看用的是哪个 DNS）
+    try:
+        import urllib.request
+        port = int(load_ui_config().get("proxy_port", 7928))
+        # 用代理访问一个返回 DNS 信息的接口
+        proxy = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}"})
+        opener = urllib.request.build_opener(proxy)
+        with opener.open("http://ip-api.com/json/?fields=dns", timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        dns_info = data.get("dns", {})
+        dns_ip = dns_info.get("ip", "未知") if isinstance(dns_info, dict) else "未知"
+        add("DNS 检查", True, f"出口 DNS: {dns_ip}")
+    except Exception as e:
+        add("DNS 检查", False, f"检查失败: {e}")
+
+    ok_count = sum(1 for r in results if r["ok"])
+    return {"ok": ok_count == len(results), "passed": ok_count, "total": len(results), "results": results}
+
+def stable_check_loop() -> None:
+    """稳定节点检查：每5分钟检查一次"""
+    print("[稳定节点] 检查线程启动", flush=True)
+    while True:
+        try:
+            time.sleep(300)
+            check_and_mark_stable_nodes()
+        except Exception as e:
+            print(f"[稳定节点] 异常: {e}", flush=True)
 
 def exit_monitor_loop() -> None:
     """多出口健康监控：每 60 秒检查一次，异常时自动恢复"""
@@ -2926,6 +3062,22 @@ def connect_node(node_id: str) -> str:
         elif not previous_node_id:
             log_connection_event("connect", node_id, node.get("name", ""), "建立连接")
         set_state(**_updates)
+        # 记录该节点本次连接开始时间（用于稳定节点判定）
+        try:
+            _nodes = read_nodes()
+            for _n in _nodes:
+                if _n.get("id") == node_id:
+                    _n["session_start"] = _now
+                    break
+            save_nodes(_nodes)
+        except Exception:
+            pass
+        # 连接后自动测速（后台）
+        try:
+            _nm = node.get("name", "")
+            threading.Thread(target=lambda: auto_speedtest_after_connect(node_id, _nm), daemon=True).start()
+        except Exception:
+            pass
         
         set_state(active_node_latency="配置路由", last_check_message="正在配置策略路由规则与流量转发...")
         routing_ready = setup_policy_routing("tun0")
@@ -3582,6 +3734,57 @@ LOGIN_HTML = r"""<!DOCTYPE html>
       return m ? "/" + m[1] : "";
     }
     function apiUrl(path) { return apiBase() + path; }
+    // 实时流量曲线
+    const _trafficHist = {rx: [], tx: []};
+    const _TRAFFIC_MAX_POINTS = 60;
+    function fmtRate(bps) {
+      if (bps < 1024) return bps.toFixed(0) + " B/s";
+      if (bps < 1048576) return (bps/1024).toFixed(1) + " KB/s";
+      return (bps/1048576).toFixed(2) + " MB/s";
+    }
+    function drawTrafficChart() {
+      const cv = $("traffic_chart");
+      if (!cv) return;
+      const ctx = cv.getContext("2d");
+      const W = cv.width, H = cv.height;
+      ctx.clearRect(0, 0, W, H);
+      const all = _trafficHist.rx.concat(_trafficHist.tx);
+      const maxV = Math.max(1, ...all);
+      const draw = (data, color) => {
+        if (data.length < 2) return;
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        data.forEach((v, i) => {
+          const x = (i / (_TRAFFIC_MAX_POINTS - 1)) * W;
+          const y = H - (v / maxV) * (H - 4) - 2;
+          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      };
+      draw(_trafficHist.rx, "#34d399");
+      draw(_trafficHist.tx, "#f59e0b");
+    }
+    async function pollTrafficRate() {
+      try {
+        const resp = await fetchWithTimeout(apiUrl("/api/traffic_rate"), {}, 8000);
+        const data = await resp.json();
+        if (!data.ok) return;
+        // 主出口端口
+        const mainPort = String(state.proxy_port || 7928);
+        const r = data.rates[mainPort];
+        if (r) {
+          _trafficHist.rx.push(r.rx_rate);
+          _trafficHist.tx.push(r.tx_rate);
+          if (_trafficHist.rx.length > _TRAFFIC_MAX_POINTS) _trafficHist.rx.shift();
+          if (_trafficHist.tx.length > _TRAFFIC_MAX_POINTS) _trafficHist.tx.shift();
+          drawTrafficChart();
+          const lbl = $("stat_traffic");
+          if (lbl) lbl.textContent = `↓${fmtRate(r.rx_rate)} ↑${fmtRate(r.tx_rate)}`;
+        }
+      } catch (e) { /* 静默 */ }
+    }
+    setInterval(pollTrafficRate, 2000);
     function fetchWithTimeout(resource, options = {}, timeoutMs = 20000) {
       if (typeof AbortController === "undefined") return fetch(resource, options);
       const controller = new AbortController();
@@ -5120,6 +5323,10 @@ INDEX_HTML = r"""<!doctype html>
           <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
           黑名单管理
         </a>
+        <a href="javascript:void(0)" onclick="openDiagnosticsModal()">
+          <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          一键诊断
+        </a>
         <a href="javascript:void(0)" onclick="openReportModal()">
           <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
           日报与历史
@@ -5187,6 +5394,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="stat-value" id="stat_speed">-</div>
         <div class="stat-label">下载速度 <span style="font-size: 10px; opacity: 0.7;">(点击测速)</span></div>
         <div class="stat-label" id="stat_traffic" style="font-size: 11px; margin-top: 2px;" title="代理流量统计"></div>
+        <canvas id="traffic_chart" width="220" height="44" style="width: 100%; height: 44px; margin-top: 4px;"></canvas>
       </div>
     </div>
   </div>
@@ -5509,6 +5717,18 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           
           <div id="net_routing_warning" style="font-size: 12px; color: var(--text-secondary); line-height: 1.4; padding: 8px 12px; background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 6px; margin-top: 8px;">
+
+          <div class="form-group" style="margin-top: 16px;">
+            <label class="form-label">连接后自动测速</label>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; margin-bottom: 8px;">
+              <input type="checkbox" id="net_auto_speedtest" style="accent-color: var(--primary);"> 启用（连上后自动测速，不达标自动换节点）
+            </label>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 12px; color: var(--text-secondary);">速度阈值</span>
+              <input type="number" id="net_speedtest_threshold" class="input-field" min="0.1" max="100" step="0.1" value="1.0" style="width: 100px;">
+              <span style="font-size: 12px; color: var(--text-secondary);">Mbps（低于此值自动切换）</span>
+            </div>
+          </div>
             ℹ️ <strong>自动配置</strong>：全自动测试并选择最佳IP。在使用过程中，如果当前连接节点没有失效，将不再更换IP；如果当前节点失效，系统将立刻秒级自动漂移到其他最快的可用节点。
           </div>
         </div>
@@ -5623,6 +5843,22 @@ INDEX_HTML = r"""<!doctype html>
         <button type="button" onclick="closeBlacklistModal()" style="background: transparent; border: none; cursor: pointer; color: var(--text-secondary); font-size: 20px;">&times;</button>
       </div>
       <div id="blacklist_list" style="max-height: 400px; overflow-y: auto;"></div>
+    </div>
+  </div>
+
+  <!-- 一键诊断 Modal -->
+  <div id="diagnostics_modal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="modal-content" tabindex="-1" style="max-width: 520px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; font-size: 18px; font-weight: 700;">一键诊断</h3>
+        <button type="button" onclick="hideModal('diagnostics_modal')" style="background: transparent; border: none; cursor: pointer; font-size: 20px; color: var(--text-secondary);">&times;</button>
+      </div>
+      <div id="diagnostics_result" style="min-height: 200px;">
+        <div style="text-align: center; color: var(--text-secondary); padding: 40px;">点击下方按钮开始诊断</div>
+      </div>
+      <div style="display: flex; justify-content: flex-end; margin-top: 16px;">
+        <button onclick="runDiagnostics()" class="btn-primary btn-sm" id="diagnostics_btn">开始诊断</button>
+      </div>
     </div>
   </div>
 
@@ -7483,6 +7719,8 @@ function openNetworkModal() {
     if ($("net_tg_token")) $("net_tg_token").value = "";
     if ($("net_tg_token")) $("net_tg_token").placeholder = state.notify_telegram_configured ? "已配置（留空保持不变）" : "123456:ABC...";
     if ($("net_daily_report_time")) $("net_daily_report_time").value = state.daily_report_time || "23:59";
+    if ($("net_auto_speedtest")) $("net_auto_speedtest").checked = !!state.auto_speedtest;
+    if ($("net_speedtest_threshold")) $("net_speedtest_threshold").value = state.speedtest_threshold_mbps || 1.0;
     const authSt = $("net_proxy_auth_status");
     if (authSt) {
       authSt.innerHTML = state.proxy_auth_enabled
@@ -7518,6 +7756,37 @@ function closeExitsModal() {
   hideModal("exits_modal");
 }
 
+function openDiagnosticsModal() {
+  showModal("diagnostics_modal");
+}
+async function runDiagnostics() {
+  const el = $("diagnostics_result");
+  const btn = $("diagnostics_btn");
+  btn.disabled = true;
+  btn.textContent = "诊断中...";
+  el.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 40px;">正在检查各项指标...</div>';
+  try {
+    const resp = await fetchWithTimeout(apiUrl("/api/diagnostics"), {}, 30000);
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error || "诊断失败");
+    const d = data.diagnostics;
+    let html = `<div style="margin-bottom: 12px; font-size: 14px;">通过 <strong style="color: ${d.ok ? "#34d399" : "#f59e0b"};">${d.passed}/${d.total}</strong> 项</div>`;
+    html += d.results.map(r => `
+      <div style="display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border-color); font-size: 13px; align-items: flex-start;">
+        <span style="font-size: 16px;">${r.ok ? "✅" : "❌"}</span>
+        <div style="flex: 1;">
+          <div style="font-weight: 600;">${esc(r.name)}</div>
+          <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px; word-break: break-all;">${esc(r.detail)}</div>
+        </div>
+      </div>`).join("");
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<div style="color: #f87171; text-align: center; padding: 20px;">${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "重新诊断";
+  }
+}
 function openReportModal() {
   const d = new Date();
   const today = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
@@ -7940,7 +8209,9 @@ async function saveNetwork(e) {
         notify_bark_url: $("net_bark_url") ? $("net_bark_url").value.trim() : "",
         notify_telegram_token: $("net_tg_token") ? $("net_tg_token").value.trim() : "",
         notify_telegram_chat_id: $("net_tg_chat") ? $("net_tg_chat").value.trim() : "",
-        daily_report_time: $("net_daily_report_time") ? $("net_daily_report_time").value : "23:59"
+        daily_report_time: $("net_daily_report_time") ? $("net_daily_report_time").value : "23:59",
+        auto_speedtest: $("net_auto_speedtest") ? $("net_auto_speedtest").checked : false,
+        speedtest_threshold_mbps: $("net_speedtest_threshold") ? parseFloat($("net_speedtest_threshold").value) || 1.0 : 1.0
       })
     }, 25000);
     const data = await readJsonResponse(res, "保存代理设置失败");
@@ -8704,6 +8975,42 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     print(f"[API Logs] Error reading log file: {e}", flush=True)
             self.send_json({"logs": entries})
+        elif effective_path == "/api/diagnostics":
+            try:
+                result = run_diagnostics()
+                self.send_json({"ok": True, "diagnostics": result})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        elif effective_path == "/api/traffic_rate":
+            try:
+                import time as _t
+                stats = proxy_server.get_traffic_stats()
+                now = _t.time()
+                # 用全局变量保存上次采样
+                global _last_traffic_sample
+                try:
+                    _last_traffic_sample
+                except NameError:
+                    _last_traffic_sample = {}
+                rates = {}
+                for port, cur in stats.items():
+                    prev = _last_traffic_sample.get(port)
+                    if prev:
+                        dt = max(0.1, now - prev["ts"])
+                        rates[str(port)] = {
+                            "rx_rate": max(0, (cur.get("rx", 0) - prev["rx"]) / dt),
+                            "tx_rate": max(0, (cur.get("tx", 0) - prev["tx"]) / dt),
+                            "rx": cur.get("rx", 0),
+                            "tx": cur.get("tx", 0),
+                        }
+                    else:
+                        rates[str(port)] = {"rx_rate": 0, "tx_rate": 0, "rx": cur.get("rx", 0), "tx": cur.get("tx", 0)}
+                    _last_traffic_sample[port] = {"ts": now, "rx": cur.get("rx", 0), "tx": cur.get("tx", 0)}
+                self.send_json({"ok": True, "rates": rates})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
         elif effective_path == "/api/daily_report":
             try:
                 from urllib.parse import urlparse, parse_qs
@@ -9303,6 +9610,12 @@ class Handler(BaseHTTPRequestHandler):
                     ui_cfg["daily_report_time"] = f"{int(_h):02d}:{int(_m):02d}"
                 except Exception:
                     pass
+                ui_cfg["auto_speedtest"] = bool(payload.get("auto_speedtest", False))
+                try:
+                    _thr = float(payload.get("speedtest_threshold_mbps") or 1.0)
+                    ui_cfg["speedtest_threshold_mbps"] = max(0.1, min(100, _thr))
+                except (TypeError, ValueError):
+                    pass
                 # Token 留空则保持原值
                 if notify_telegram_token:
                     ui_cfg["notify_telegram_token"] = notify_telegram_token
@@ -9668,6 +9981,8 @@ def main() -> None:
             print(f"[多出口] 监控循环异常退出: {e}", flush=True)
     # 日报定时推送线程
     threading.Thread(target=daily_report_loop, daemon=True).start()
+    # 稳定节点检查线程
+    threading.Thread(target=stable_check_loop, daemon=True).start()
     threading.Thread(target=_sync_exits_delayed, daemon=True).start()
 
     # Wait for the gateway to officially start
