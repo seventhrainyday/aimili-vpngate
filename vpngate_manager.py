@@ -5429,23 +5429,18 @@ INDEX_HTML = r"""<!doctype html>
         <div class="stat-label" id="stat_traffic" style="font-size: 11px; margin-top: 2px;" title="代理流量统计"></div>
       </div>
     </div>
+    <div class="stat-card" style="--accent: #34d399; cursor: default;">
+      <div class="stat-icon">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/></svg>
+      </div>
+      <div class="stat-body" style="flex: 1; min-width: 0;">
+        <div class="stat-value" id="traffic_rate_text" style="font-size: 13px; white-space: nowrap;">-</div>
+        <div class="stat-label"><span style="color: #34d399;">●</span> 下载 <span style="color: #f59e0b;">●</span> 上传</div>
+        <canvas id="traffic_chart" width="200" height="40" style="width: 100%; height: 40px; display: block; margin-top: 2px;"></canvas>
+      </div>
+    </div>
   </div>
 
-  <!-- 实时流量曲线卡片 -->
-  <div class="stat-card" style="--accent: #34d399; margin-bottom: 16px; cursor: default;">
-    <div class="stat-icon">
-      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/></svg>
-    </div>
-    <div class="stat-body" style="flex: 1;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-        <span class="stat-label">实时流量</span>
-        <span style="font-size: 11px; color: var(--text-secondary);"><span style="color: #34d399;">●</span> 下载 <span style="color: #f59e0b;">●</span> 上传</span>
-      </div>
-      <canvas id="traffic_chart" width="600" height="90" style="width: 100%; height: 90px; display: block;"></canvas>
-      <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;" id="traffic_rate_text">等待数据...</div>
-    </div>
-  </div>
-  
     <!-- 当前连接活动节点卡片 -->
     <section class="active-node-section" id="active_node_card" style="margin-bottom: 24px;">
       <!-- Rendered dynamically by render() -->
