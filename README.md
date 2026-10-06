@@ -57,6 +57,7 @@
 ## 更新日志
 
 ### 2026-10-07
+- `xxx` 临时禁用 panel_name/process_name 后端处理：排查 ARM 上 update_settings 崩溃问题
 - `3a84124` 修复代理设置误触发重启：`expected_proxy_port` 可能是字符串，`int != str` 恒为 True 导致每次保存都 `os._exit(0)` 自杀（ARM 上响应没刷出去就被杀）
 - `e72caaf` do_GET/do_POST 加最外层异常兜底：任何未捕获异常都返回 500 JSON，不再静默掐连接（ARM/Alpine 排查）
 - `7bfad44` NAT 兼容：响应加 `Connection: close`，避免复用连接被 NAT 网关掐掉
