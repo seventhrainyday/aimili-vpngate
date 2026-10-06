@@ -49,7 +49,21 @@ def parse_host_port(authority: str, default_port: int) -> tuple[str, int]:
         return host, parse_int(port_text) or default_port
     return authority, default_port
 
+# 运行时认证覆盖（由 vpngate_manager 从 Web 设置注入）
+_proxy_user_override: str | None = None
+_proxy_password_override: str | None = None
+
+def set_proxy_credentials(user: str | None, password: str | None) -> None:
+    global _proxy_user_override, _proxy_password_override
+    _proxy_user_override = user
+    _proxy_password_override = password
+
 def get_proxy_credentials() -> tuple[str | None, str | None]:
+    # 运行时覆盖（由 vpngate_manager 从 Web 设置注入，优先级高于环境变量）
+    if _proxy_user_override is not None or _proxy_password_override is not None:
+        if not _proxy_user_override and not _proxy_password_override:
+            return None, None
+        return _proxy_user_override or "", _proxy_password_override or ""
     user = os.environ.get("LOCAL_PROXY_USER") or os.environ.get("LOCAL_PROXY_USERNAME")
     password = os.environ.get("LOCAL_PROXY_PASS") or os.environ.get("LOCAL_PROXY_PASSWORD")
     if user is None and password is None:
