@@ -5870,6 +5870,17 @@ INDEX_HTML = r"""<!doctype html>
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
           <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="net_proxy_user">代理账号（留空则无认证）</label>
+            <input type="text" id="net_proxy_user" class="input-field" placeholder="留空表示无需认证" autocomplete="off">
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="net_proxy_password">代理密码</label>
+            <input type="password" id="net_proxy_password" class="input-field" placeholder="留空表示无需认证" autocomplete="new-password">
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+          <div class="form-group" style="margin-bottom: 0;">
             <label class="form-label" for="net_proxy_bind">代理监听地址</label>
             <select id="net_proxy_bind" class="input-field">
               <option value="0.0.0.0">0.0.0.0（允许外部连接）</option>
@@ -5912,17 +5923,6 @@ INDEX_HTML = r"""<!doctype html>
             </div>
             <button type="button" onclick="testNotify()" class="btn-sm" style="font-size: 12px;">发送测试通知</button>
             <span id="notify_test_result" style="font-size: 12px; margin-left: 8px;"></span>
-          </div>
-        </div>
-
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
-          <div class="form-group" style="margin-bottom: 0;">
-            <label class="form-label" for="net_proxy_user">代理账号（留空则无认证）</label>
-            <input type="text" id="net_proxy_user" class="input-field" placeholder="留空表示无需认证" autocomplete="off">
-          </div>
-          <div class="form-group" style="margin-bottom: 0;">
-            <label class="form-label" for="net_proxy_password">代理密码</label>
-            <input type="password" id="net_proxy_password" class="input-field" placeholder="留空表示无需认证" autocomplete="new-password">
           </div>
         </div>
 
