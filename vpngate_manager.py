@@ -8787,6 +8787,25 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     print(f"[API Logs] Error reading log file: {e}", flush=True)
             self.send_json({"logs": entries})
+        elif effective_path == "/api/daily_report":
+            try:
+                from urllib.parse import urlparse, parse_qs
+                qs = parse_qs(urlparse(self.path).query)
+                date_str = (qs.get("date") or [""])[0].strip()
+                report = generate_daily_report(date_str)
+                self.send_json({"ok": True, "report": report})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        elif effective_path == "/api/conn_history":
+            try:
+                history = read_json(CONN_HISTORY_FILE, [])
+                if not isinstance(history, list):
+                    history = []
+                self.send_json({"ok": True, "history": history[-100:][::-1]})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
         else:
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
@@ -8954,28 +8973,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-            except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
-
-        elif effective_path == "/api/daily_report":
-            try:
-                from urllib.parse import urlparse, parse_qs
-                qs = parse_qs(urlparse(self.path).query)
-                date_str = (qs.get("date") or [""])[0].strip()
-                report = generate_daily_report(date_str)
-                self.send_json({"ok": True, "report": report})
-            except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
-
-        elif effective_path == "/api/conn_history":
-            try:
-                history = read_json(CONN_HISTORY_FILE, [])
-                if not isinstance(history, list):
-                    history = []
-                # 最近 100 条，倒序
-                self.send_json({"ok": True, "history": history[-100:][::-1]})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
