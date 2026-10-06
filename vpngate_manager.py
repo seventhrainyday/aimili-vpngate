@@ -5475,15 +5475,30 @@ function getFilteredNodes() {
 }
 
 function stableSortNodes() {
+  // 与后端 sort_all_nodes 保持一致：可用优先（新拉取的在前），然后待检测，最后不可用
+  const rank = n => {
+    if (!n) return 3;
+    if (n.active || n.probe_status === "available") return 0;
+    if (n.probe_status === "not_checked" || n.probe_status === "testing") return 1;
+    return 2;
+  };
+  const isGoodIp = n => (n.ip_type === "residential" || n.ip_type === "mobile") ? 0 : 1;
   nodes.sort((a, b) => {
     if (!a || !b) return 0;
-    const aScore = a.score || 0;
-    const bScore = b.score || 0;
-    if (bScore !== aScore) {
-      return bScore - aScore;
+    const ra = rank(a), rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    if (ra === 0) {
+      // 可用：住宅/移动优先 → 新拉取优先 → 低延迟优先 → 高分优先
+      const ia = isGoodIp(a), ib = isGoodIp(b);
+      if (ia !== ib) return ia - ib;
+      const ta = parseFloat(a.last_seen_at) || 0, tb = parseFloat(b.last_seen_at) || 0;
+      if (tb !== ta) return tb - ta;
+      const la = parseInt(a.latency_ms) || 999999, lb = parseInt(b.latency_ms) || 999999;
+      if (la !== lb) return la - lb;
     }
-    const aId = a.id || "";
-    const bId = b.id || "";
+    const sa = parseInt(a.score) || 0, sb = parseInt(b.score) || 0;
+    if (sb !== sa) return sb - sa;
+    const aId = a.id || "", bId = b.id || "";
     return aId.localeCompare(bId);
   });
 }
