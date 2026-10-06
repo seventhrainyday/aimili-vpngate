@@ -27,6 +27,7 @@ import sys
 import uuid
 
 class DualStackHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
     def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
         host, port = server_address
         if ":" in host or host == "":
@@ -9214,6 +9215,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+        self.wfile.flush()
 
     def send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         self.send_bytes(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", status)
