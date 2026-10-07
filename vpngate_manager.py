@@ -8661,15 +8661,23 @@ async function saveNetwork(e) {
     const data = await readJsonResponse(res, "保存代理设置失败");
     if (res.ok && data.ok) {
       if (data.restart_needed) {
-        successDiv.textContent = "保存成功！代理出站端口已变更，页面将在 4 秒内自动刷新...";
+        successDiv.textContent = "保存成功！代理出站端口已变更，等待服务重启...";
         successDiv.style.display = "block";
         
         const inputs = $("network_form").querySelectorAll("input, button");
         inputs.forEach(el => el.disabled = true);
         
-        setTimeout(() => {
+        // 轮询等服务器回来再刷新，避免 4 秒固定等待不够用
+        (async () => {
+          for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            try {
+              const r = await fetchWithTimeout(apiUrl("/api/ping"), {method: "GET"}, 3000);
+              if (r.ok) break;
+            } catch (e) {}
+          }
           window.location.reload();
-        }, 4000);
+        })();
       } else {
         successDiv.textContent = "配置保存成功，已即时生效！";
         successDiv.style.display = "block";
@@ -9257,6 +9265,9 @@ class Handler(BaseHTTPRequestHandler):
     def _do_GET_inner(self) -> None:
         effective_path = self.validate_path()
         if effective_path == "": return
+        if effective_path == "/api/ping":
+            self.send_json({"ok": True, "pong": True})
+            return
         
         if not self.is_authorized():
             if effective_path in ("/", "/index.html"):
