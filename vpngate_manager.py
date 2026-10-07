@@ -10003,9 +10003,7 @@ class Handler(BaseHTTPRequestHandler):
 
         elif effective_path == "/api/update_settings":
             try:
-                print("[update_settings] 收到请求", flush=True)
                 payload = self.read_json_body()
-                print(f"[update_settings] 请求体解析完成，字段数={len(payload)}", flush=True)
                 
                 new_proxy_port = payload.get("proxy_port")
                 routing_mode = str(payload.get("routing_mode") or "auto").strip()
@@ -10144,9 +10142,7 @@ class Handler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     restart_needed = True
                 if restart_needed:
-                    print(f"[update_settings] 准备发送响应，restart_needed={restart_needed}", flush=True)
                     self.send_json({"ok": True, "restart_needed": True, "message": "配置更新成功，代理出站端口变更，将在 2 秒内重启..."})
-                    print("[update_settings] 响应已发送", flush=True)
                     
                     def restart_server():
                         time.sleep(2)
@@ -10156,7 +10152,6 @@ class Handler(BaseHTTPRequestHandler):
                     threading.Thread(target=restart_server, daemon=True).start()
                 else:
                     message = policy_message or "配置更新成功，已即时生效！"
-                    print(f"[update_settings] 准备发送成功响应", flush=True)
                     self.send_json({"ok": True, "restart_needed": False, "message": message})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
