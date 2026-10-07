@@ -57,6 +57,7 @@
 ## 更新日志
 
 ### 2026-10-07
+- `xxx` 修复弹窗重开后保存按钮卡死：openNetworkModal/openCredentialsModal 打开时重置按钮状态
 - `5096d8c` 清理 update_settings 调试日志
 - `a49c7b2` 加 update_settings 后端日志：定位保存卡死问题（已确认服务器正常返回 200，系客户端网络丢响应包）
 - `5aaeeb8` 修复代理设置改端口后按钮卡死：重启等待从固定 4 秒改为轮询 `/api/ping`（新增）直到服务器回来再刷新

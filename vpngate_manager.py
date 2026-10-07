@@ -8035,6 +8035,12 @@ function openCredentialsModal() {
   $("credentials_error").style.display = "none";
   $("credentials_success").style.display = "none";
   $("credentials_form").reset();
+  const saveBtn = document.querySelector('#credentials_form button[type="submit"]');
+  if (saveBtn) {
+    saveBtn.disabled = false;
+    saveBtn.textContent = "保存修改";
+  }
+  $("credentials_form").querySelectorAll("input, button, select").forEach(el => el.disabled = false);
   if (state) {
     $("cred_username").value = state.username || "";
     $("cred_password").value = "";
@@ -8145,6 +8151,14 @@ function openNetworkModal() {
   $("network_error").style.display = "none";
   $("network_success").style.display = "none";
   $("network_form").reset();
+  // 重置保存按钮状态（防止上次保存后按钮卡在"正在保存..."）
+  const saveBtn = document.querySelector('#network_form button[type="submit"]');
+  if (saveBtn) {
+    saveBtn.disabled = false;
+    saveBtn.textContent = "保存修改";
+  }
+  // 启用所有被禁用的输入框（重启等待时禁用过）
+  $("network_form").querySelectorAll("input, button, select").forEach(el => el.disabled = false);
   
   if (state) {
     $("net_proxy_port").value = state.proxy_port || 7928;
