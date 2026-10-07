@@ -4000,6 +4000,14 @@ INDEX_HTML = r"""<!doctype html>
       display: flex;
       align-items: center;
       gap: 8px;
+      flex-wrap: wrap;
+      word-break: break-all;
+    }
+    @media (max-width: 768px) {
+      .status {
+        font-size: 12px;
+        line-height: 1.6;
+      }
     }
 
     .status-dot {
