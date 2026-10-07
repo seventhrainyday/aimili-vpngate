@@ -57,7 +57,7 @@
 ## 更新日志
 
 ### 2026-10-07
-- `xxx` 加 update_settings 后端日志：定位保存卡死问题
+- `a49c7b2` 加 update_settings 后端日志：定位保存卡死问题
 - `5aaeeb8` 修复代理设置改端口后按钮卡死：重启等待从固定 4 秒改为轮询 `/api/ping`（新增）直到服务器回来再刷新
 - `bb01098` ARM/Alpine 真因：musl 的 IPv6 双栈有问题，默认绑定改为 IPv4 `0.0.0.0`（之前 `::` 会导致 API 连接被掐）；恢复 panel_name/process_name 代码（排查证明不是它的锅）
 - `1dc94fe` 临时禁用 panel_name/process_name 后端处理：排查 ARM 上 update_settings 崩溃问题（已恢复）
