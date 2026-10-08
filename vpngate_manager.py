@@ -26,13 +26,6 @@ import concurrent.futures
 import sys
 import uuid
 
-# musl (Alpine) 默认线程栈较小，显式设大避免请求处理线程栈溢出
-import threading as _threading
-try:
-    _threading.stack_size(8 * 1024 * 1024)
-except (ValueError, RuntimeError):
-    pass
-
 class DualStackHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
