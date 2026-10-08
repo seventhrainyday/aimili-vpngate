@@ -5452,6 +5452,10 @@ INDEX_HTML = r"""<!doctype html>
           <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H18.5" /></svg>
           检测更新
         </button>
+        <button id="onekey_update_btn" type="button" onclick="oneKeyUpdate(event)" style="background: rgba(16,185,129,0.15); border-color: rgba(16,185,129,0.3); color: #34d399;">
+          <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+          一键更新
+        </button>
         <a href="https://github.com/seventhrainyday/aimili-vpngate/tree/enhanced" target="_blank" rel="noopener noreferrer">GitHub 修复分支</a>
         <a id="latest_release_link" href="https://github.com/seventhrainyday/aimili-vpngate/tree/enhanced" target="_blank" rel="noopener noreferrer">下载最新修复版</a>
         <div id="update_check_status" class="update-check-status" role="status" aria-live="polite">点击“检测更新”查询 GitHub 最新版本。</div>
@@ -7809,6 +7813,40 @@ async function checkForUpdate(event) {
   }
 }
 
+async function oneKeyUpdate(event) {
+  if (event) event.stopPropagation();
+  if (!confirm("确定要一键更新代码到最新版吗？更新后服务会自动重启（约10秒）。")) return;
+  const button = $("onekey_update_btn");
+  const statusBox = $("update_check_status");
+  if (button) { button.disabled = true; button.textContent = "更新中..."; }
+  if (statusBox) statusBox.textContent = "正在从 GitHub 拉取最新代码...";
+  try {
+    const res = await fetchWithTimeout(apiUrl("/api/update_code"), {method: "POST"}, 30000);
+    const data = await readJsonResponse(res, "一键更新失败");
+    if (res.ok && data.ok) {
+      if (statusBox) statusBox.textContent = `更新成功：${data.version}，服务重启中...`;
+      // 轮询等服务器回来
+      (async () => {
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 1000));
+          try {
+            const r = await fetchWithTimeout(apiUrl("/api/ping"), {method: "GET"}, 3000);
+            if (r.ok) break;
+          } catch (e) {}
+        }
+        window.location.reload();
+      })();
+    } else {
+      if (statusBox) statusBox.textContent = "更新失败：" + (data.error || "未知错误");
+      if (button) { button.disabled = false; button.innerHTML = "一键更新"; }
+    }
+  } catch (err) {
+    if (statusBox) statusBox.textContent = "更新请求超时，服务可能正在重启，请稍后刷新页面。";
+    // 超时也可能是已触发重启，尝试轮询
+    setTimeout(() => window.location.reload(), 15000);
+  }
+}
+
 if (adminBtn && adminDropdown) {
   adminBtn.onclick = (e) => {
     e.stopPropagation();
@@ -10015,6 +10053,35 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
+        elif effective_path == "/api/update_code":
+            try:
+                import subprocess
+                # git fetch + reset 到 origin/enhanced
+                r1 = subprocess.run(["git", "fetch", "origin", "enhanced"], cwd="/opt/aimilivpn",
+                                    capture_output=True, text=True, timeout=30)
+                if r1.returncode != 0:
+                    self.send_json({"ok": False, "error": f"git fetch 失败: {r1.stderr[:200]}"})
+                    return
+                r2 = subprocess.run(["git", "reset", "--hard", "origin/enhanced"], cwd="/opt/aimilivpn",
+                                    capture_output=True, text=True, timeout=30)
+                if r2.returncode != 0:
+                    self.send_json({"ok": False, "error": f"git reset 失败: {r2.stderr[:200]}"})
+                    return
+                # 获取新版本号
+                r3 = subprocess.run(["git", "log", "--oneline", "-1"], cwd="/opt/aimilivpn",
+                                    capture_output=True, text=True, timeout=10)
+                ver = r3.stdout.strip() if r3.returncode == 0 else "unknown"
+                self.send_json({"ok": True, "version": ver, "message": "代码已更新，2秒后重启生效"})
+                def restart_after_update():
+                    import time as _t
+                    _t.sleep(2)
+                    import os as _os
+                    _os._exit(0)
+                import threading as _th
+                _th.Thread(target=restart_after_update, daemon=True).start()
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
         elif effective_path == "/api/update_settings":
             try:
                 payload = self.read_json_body()
