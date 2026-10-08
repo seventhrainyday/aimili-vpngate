@@ -8708,10 +8708,9 @@ async function saveNetwork(e) {
       submitBtn.textContent = "保存修改";
     }
   } catch (err) {
-    errorDivEl.textContent = "连接服务器失败，请稍后重试";
+    errorDivEl.textContent = "请求超时，正在验证保存结果...";
     errorDivEl.style.display = "block";
-    submitBtn.disabled = false;
-    submitBtn.textContent = "保存修改";
+    setTimeout(() => { closeNetworkModal(); load(); }, 1500);
   }
 }
 
