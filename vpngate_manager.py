@@ -2794,6 +2794,35 @@ def auto_switch_exit(exit_id: str) -> str:
     stop_extra_exit(exit_id)
     return start_extra_exit(exit_id)
 
+def test_proxy_speed(timeout: int = 30) -> dict:
+    """测试当前代理的下载速度，返回 {"speed_mbps": float}"""
+    import subprocess
+    import time as _t
+    test_url = "http://speedtest.tele2.net/10MB.zip"
+    try:
+        _cfg = load_ui_config()
+        _bh = str(_cfg.get("proxy_bind_host") or "0.0.0.0")
+        _port = int(_cfg.get("proxy_port") or 7928)
+        _host = "127.0.0.1" if _bh == "0.0.0.0" else _bh
+        _start = _t.time()
+        # 用 curl 通过代理下载测试，限制时间和大小
+        _r = subprocess.run(
+            ["curl", "-s", "-o", "/dev/null", "-w", "%{speed_download}",
+             "--max-time", str(timeout), "--proxy", f"http://{_host}:{_port}",
+             test_url],
+            capture_output=True, text=True, timeout=timeout + 5
+        )
+        _elapsed = _t.time() - _start
+        if _r.returncode == 0 and _r.stdout.strip():
+            try:
+                _bps = float(_r.stdout.strip())
+                return {"speed_mbps": round(_bps * 8 / 1_000_000, 2), "elapsed": round(_elapsed, 1)}
+            except ValueError:
+                pass
+    except Exception:
+        pass
+    return {"speed_mbps": 0}
+
 def auto_speedtest_after_connect(node_id: str, node_name: str = "") -> None:
     """连接成功后自动测速，不达标则触发切换"""
     try:
@@ -10084,12 +10113,19 @@ class Handler(BaseHTTPRequestHandler):
                 r3 = subprocess.run(["git", "log", "--oneline", "-1"], cwd="/opt/aimilivpn",
                                     capture_output=True, text=True, timeout=10)
                 ver = r3.stdout.strip() if r3.returncode == 0 else "unknown"
-                self.send_json({"ok": True, "version": ver, "message": "代码已更新，2秒后重启生效"})
+                self.send_json({"ok": True, "version": ver, "message": "代码已更新，正在重启服务..."})
                 def restart_after_update():
                     import time as _t
+                    import subprocess as _sp
                     _t.sleep(2)
-                    import os as _os
-                    _os._exit(0)
+                    # 用服务管理器重启，os._exit(0) 会被视为正常退出而不重启
+                    try:
+                        _sp.run(["rc-service", "aimilivpn", "restart"], timeout=30)
+                    except Exception:
+                        try:
+                            _sp.run(["systemctl", "restart", "aimilivpn"], timeout=30)
+                        except Exception:
+                            pass
                 import threading as _th
                 _th.Thread(target=restart_after_update, daemon=True).start()
             except Exception as exc:
