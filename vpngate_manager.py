@@ -8939,18 +8939,31 @@ function copyLogContent() {
     return;
   }
   
-  navigator.clipboard.writeText(text).then(() => {
-    alert("日志内容已成功复制到剪贴板！");
-  }).catch(err => {
-    console.error("复制失败", err);
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand("copy");
-    document.body.removeChild(ta);
-    alert("日志内容已复制到剪贴板！");
-  });
+  // 优先用 Clipboard API（HTTPS 才可用）
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      alert("日志内容已成功复制到剪贴板！");
+    }).catch(err => {
+      fallbackCopyLog(text, term);
+    });
+  } else {
+    fallbackCopyLog(text, term);
+  }
+}
+
+function fallbackCopyLog(text, term) {
+  // HTTP/移动端：选中日志区文本，提示用户长按复制
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(term);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    alert("日志已选中，请长按选择复制。");
+  } catch (e) {
+    // 最后兜底：弹窗显示前500字
+    prompt("请手动复制日志：", text.substring(0, 500));
+  }
 }
 
 function exportLogContent() {
