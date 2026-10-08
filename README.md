@@ -57,7 +57,7 @@
 ## 更新日志
 
 ### 2026-10-07
-- `xxx` 回滚 8MB 线程栈设置：256MB 小内存机器上每个请求线程 8MB 会导致 OOM，删掉后恢复默认
+- `146f7a0` 回滚 8MB 线程栈设置：256MB 小内存机器上每个请求线程 8MB 会导致 OOM，删掉后恢复默认
 - `b0f63b9` 修复手机端头部状态栏文字截断：.status 加 flex-wrap 和 word-break，代理地址不再显示为 http://0.0.0:52051
 - `9bdf6ec` 修复弹窗重开后保存按钮卡死：openNetworkModal/openCredentialsModal 打开时重置按钮状态
 - `5096d8c` 清理 update_settings 调试日志
