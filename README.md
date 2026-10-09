@@ -58,6 +58,7 @@
 
 ### 2026-10-07
 - `146f7a0` 回滚 8MB 线程栈设置：256MB 小内存机器上每个请求线程 8MB 会导致 OOM，删掉后恢复默认
+- `xxx` 修复 save_nodes 未定义：两处调用改为 write_json(NODES_FILE, ...)，此前每次稳定节点检查都报错
 - `113d877` 修复一键更新后服务不起：os._exit(0) 被视为正常退出，OpenRC 不重启，改调 rc-service/systemctl
 - `113d877` 修复自动测速 NameError：补上 test_proxy_speed() 函数定义
 - `eb7607d` 修复日志一键复制在 HTTP/移动端无效：改用选中文本+长按复制的 fallback

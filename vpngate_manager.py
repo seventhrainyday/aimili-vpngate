@@ -1917,7 +1917,7 @@ def check_and_mark_stable_nodes() -> None:
                 changed = True
                 log_to_json("INFO", "稳定节点", f"节点 {n.get('name', node_id)} 连续在线超 {STABLE_MINUTES} 分钟，加入稳定名单")
         if changed:
-            save_nodes(nodes)
+            write_json(NODES_FILE, nodes)
     except Exception as e:
         print(f"[稳定节点] 检查失败: {e}", flush=True)
 
@@ -3130,7 +3130,7 @@ def connect_node(node_id: str) -> str:
                 if _n.get("id") == node_id:
                     _n["session_start"] = _now
                     break
-            save_nodes(_nodes)
+            write_json(NODES_FILE, _nodes)
         except Exception:
             pass
         # 连接后自动测速（后台）
