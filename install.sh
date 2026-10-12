@@ -153,9 +153,12 @@ elif command -v rc-service >/dev/null 2>&1; then
 description="AimiliVPN OpenVPN Manager with HTTP/SOCKS5 Proxy"
 command="/usr/bin/python3"
 command_args="${INSTALL_DIR}/vpngate_manager.py"
-command_background="yes"
 directory="${INSTALL_DIR}"
 pidfile="/run/aimilivpn.pid"
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+error_log="${INSTALL_DIR}/vpngate_data/stderr.log"
 
 depend() {
     need net
