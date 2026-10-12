@@ -124,6 +124,13 @@ NODE_PROBE_WORKERS = env_int("NODE_PROBE_WORKERS", 10, 1, 20)
 # 节点累积存储上限：拉取新节点时不再删除老节点，仅在超过该上限时按策略淘汰
 MAX_STORED_NODES = env_int("MAX_STORED_NODES", 1000, 100)
 PROXY_FAILURE_THRESHOLD = env_int("PROXY_FAILURE_THRESHOLD", 3, 1, 10)
+# 维护（周期检测）结束后的宽限期（秒）：期间出口失败只计数不判死，
+# 避免维护收尾阶段的短暂出口不通误杀当前节点；0 表示关闭宽限
+MAINTENANCE_GRACE_SECONDS = env_int("MAINTENANCE_GRACE_SECONDS", 180, 0, 3600)
+# 判死前原地重连抢救的冷却（秒）：同一节点两次抢救至少间隔该时长
+RESCUE_COOLDOWN_SECONDS = env_int("RESCUE_COOLDOWN_SECONDS", 600, 0, 86400)
+last_maintenance_end_at: float = 0.0
+last_rescue_attempt_at: dict[str, float] = {}
 SWITCH_PREFLIGHT_MAX_AGE_SECONDS = env_int("SWITCH_PREFLIGHT_MAX_AGE_SECONDS", 180, 0, 3600)
 OPENVPN_CMD = os.environ.get("OPENVPN_CMD", "openvpn")
 OPENVPN_AUTH_USER = os.environ.get("OPENVPN_AUTH_USER", "vpn")
@@ -3264,7 +3271,7 @@ def prune_stored_nodes(nodes: list[dict[str, Any]], limit: int) -> list[dict[str
 
 
 def maintain_valid_nodes(force: bool = False) -> str:
-    global active_openvpn_process, active_openvpn_node_id, is_connecting
+    global active_openvpn_process, active_openvpn_node_id, is_connecting, last_maintenance_end_at
     ensure_dirs()
     if not maintenance_lock.acquire(blocking=False):
         msg = "节点维护任务正在运行，请稍后再试"
@@ -3565,6 +3572,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
         raise e
     finally:
         is_connecting = False
+        last_maintenance_end_at = time.time()
         maintenance_lock.release()
 
 
@@ -9190,7 +9198,16 @@ def background_proxy_checker() -> None:
                 error_msg = res.get("error", "未知错误")
                 failure_count = record_proxy_failure(checked_node_id) if checked_node_id else 0
                 process_exited = bool(checked_node_id) and not active_openvpn_running()
-                should_recover = process_exited or failure_count >= PROXY_FAILURE_THRESHOLD
+                # A：维护刚结束的宽限期内只计数不判死（进程真退出仍立即恢复）
+                in_grace = (
+                    not process_exited
+                    and MAINTENANCE_GRACE_SECONDS > 0
+                    and last_maintenance_end_at > 0
+                    and (time.time() - last_maintenance_end_at) < MAINTENANCE_GRACE_SECONDS
+                )
+                should_recover = process_exited or (
+                    failure_count >= PROXY_FAILURE_THRESHOLD and not in_grace
+                )
                 if checked_node_id:
                     print(f"[警告] {LOCAL_PROXY_PORT} 端口本地代理当前不可用！原因: {error_msg}", flush=True)
                     log_to_json(
@@ -9200,7 +9217,10 @@ def background_proxy_checker() -> None:
                     )
                 display_error = error_msg
                 if checked_node_id and not process_exited and not should_recover:
-                    display_error = f"{error_msg}（连续失败 {failure_count}/{PROXY_FAILURE_THRESHOLD}，暂不切换）"
+                    if in_grace and failure_count >= PROXY_FAILURE_THRESHOLD:
+                        display_error = f"{error_msg}（维护刚结束，宽限期内暂不切换）"
+                    else:
+                        display_error = f"{error_msg}（连续失败 {failure_count}/{PROXY_FAILURE_THRESHOLD}，暂不切换）"
                 set_state(
                     proxy_ok=False,
                     proxy_ip="-",
@@ -9215,14 +9235,31 @@ def background_proxy_checker() -> None:
                     ui_cfg = load_ui_config()
                     routing_mode = ui_cfg.get("routing_mode", "auto")
                     if routing_mode != "fixed_ip":
-                        with lock:
-                            nodes = read_nodes()
-                            active_node = next((n for n in nodes if n.get("id") == checked_node_id), None)
-                            if active_node:
-                                mark_blacklisted(active_node, f"代理连通性检测失败: {error_msg}")
-                                active_node["probe_status"] = "unavailable"
-                                write_json(NODES_FILE, nodes)
-                        auto_switch_node()
+                        # C：判死前先原地重连同一节点抢救一次（冷却期内不重复抢救）。
+                        # 抢救成功说明是短暂故障（如维护收尾的出口黑洞），不拉黑不切换；
+                        # 抢救失败才走原来的拉黑 + 自动切换。
+                        rescued = False
+                        if time.time() - last_rescue_attempt_at.get(checked_node_id, 0.0) >= RESCUE_COOLDOWN_SECONDS:
+                            last_rescue_attempt_at[checked_node_id] = time.time()
+                            print(f"[代理守护线程] 判死前先原地重连抢救同一节点: {checked_node_id}", flush=True)
+                            log_to_json("WARNING", "VPN", f"节点 {checked_node_id} 出口检测失败，先原地重连抢救（暂不切换）: {error_msg}")
+                            try:
+                                connect_node(checked_node_id)
+                                rescued = bool(check_proxy_health().get("ok"))
+                            except Exception as e:
+                                print(f"[代理守护线程] 抢救重连失败: {e}", flush=True)
+                            if rescued:
+                                log_to_json("INFO", "VPN", f"节点 {checked_node_id} 原地重连后出口已恢复，取消本次切换")
+                                reset_proxy_failure_counter(checked_node_id)
+                        if not rescued:
+                            with lock:
+                                nodes = read_nodes()
+                                active_node = next((n for n in nodes if n.get("id") == checked_node_id), None)
+                                if active_node:
+                                    mark_blacklisted(active_node, f"代理连通性检测失败: {error_msg}")
+                                    active_node["probe_status"] = "unavailable"
+                                    write_json(NODES_FILE, nodes)
+                            auto_switch_node()
                     else:
                         print(f"[代理守护线程] 固定 IP 模式下代理不可用，正在尝试重启连接同一节点: {checked_node_id}", flush=True)
                         try:
