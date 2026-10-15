@@ -1130,5 +1130,130 @@ class ProxyServerConcurrencyTests(unittest.TestCase):
         self.assertEqual([("first", "first"), ("second", "second")], seen)
 
 
+class SecurityHardeningTests(unittest.TestCase):
+    """2026-10-15 安全加固（a+b+c+d）回归测试。"""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.path_patches = [mock.patch.object(manager, "DATA_DIR", root)]
+        for patcher in self.path_patches:
+            patcher.start()
+        manager.ensure_dirs()
+        manager._login_failures.clear()
+
+    def tearDown(self) -> None:
+        for patcher in self.path_patches:
+            patcher.stop()
+        self.temp_dir.cleanup()
+        manager._login_failures.clear()
+
+    # ---- (a) 面板密码哈希 ----
+    def test_password_hash_roundtrip(self) -> None:
+        salt, digest = manager.hash_panel_password("S3cret!Pass")
+        self.assertEqual(32, len(salt))
+        self.assertEqual(64, len(digest))
+        salt2, digest2 = manager.hash_panel_password("S3cret!Pass", salt)
+        self.assertEqual((salt, digest), (salt2, digest2))
+        _, digest3 = manager.hash_panel_password("other-password", salt)
+        self.assertNotEqual(digest, digest3)
+        salt4, _ = manager.hash_panel_password("S3cret!Pass")
+        self.assertNotEqual(salt, salt4)
+
+    def test_verify_panel_password_hash_and_legacy(self) -> None:
+        salt, digest = manager.hash_panel_password("MyPwd123")
+        cfg = {"password_hash": digest, "password_salt": salt, "password": ""}
+        self.assertTrue(manager.verify_panel_password("MyPwd123", cfg))
+        self.assertFalse(manager.verify_panel_password("WrongPwd", cfg))
+        # 老版本明文兼容
+        legacy = {"password": "OldPlain123"}
+        self.assertTrue(manager.verify_panel_password("OldPlain123", legacy))
+        self.assertFalse(manager.verify_panel_password("nope", legacy))
+        self.assertTrue(manager.panel_password_is_set(cfg))
+        self.assertTrue(manager.panel_password_is_set(legacy))
+        self.assertFalse(manager.panel_password_is_set({}))
+        self.assertFalse(manager.panel_password_is_set({"password": ""}))
+
+    def test_legacy_plaintext_migrates_to_hash_on_load(self) -> None:
+        auth_file = manager.DATA_DIR / "ui_auth.json"
+        manager.write_json(auth_file, {
+            "username": "admin",
+            "password": "LegacyPwd123",
+            "secret_path": "Abc123Xyz",
+        })
+        cfg = manager.load_ui_config()
+        self.assertEqual("", cfg.get("password"))
+        self.assertTrue(cfg.get("password_hash"))
+        self.assertTrue(cfg.get("password_salt"))
+        self.assertTrue(manager.verify_panel_password("LegacyPwd123", cfg))
+        self.assertFalse(manager.verify_panel_password("WrongPwd", cfg))
+        # 已持久化：落盘文件里没有明文
+        on_disk = json.loads(auth_file.read_text(encoding="utf-8"))
+        self.assertEqual("", on_disk.get("password"))
+        self.assertTrue(on_disk.get("password_hash"))
+        # 已有 secret_path 不被改写
+        self.assertEqual("Abc123Xyz", cfg.get("secret_path"))
+
+    def test_fresh_install_gets_hash_and_random_secret_path(self) -> None:
+        cfg = manager.load_ui_config()
+        self.assertEqual("", cfg.get("password"))
+        self.assertTrue(cfg.get("password_hash"))
+        self.assertTrue(cfg.get("password_salt"))
+        self.assertTrue(manager.panel_password_is_set(cfg))
+        secret_path = cfg.get("secret_path")
+        self.assertTrue(re.fullmatch(r"[A-Za-z0-9]{12}", secret_path or ""))
+        self.assertNotEqual("EJsW2EeBo9lY", secret_path)
+        # 已持久化
+        on_disk = json.loads((manager.DATA_DIR / "ui_auth.json").read_text(encoding="utf-8"))
+        self.assertEqual(secret_path, on_disk.get("secret_path"))
+        self.assertTrue(on_disk.get("password_hash"))
+
+    def test_secret_path_missing_in_file_gets_randomized(self) -> None:
+        auth_file = manager.DATA_DIR / "ui_auth.json"
+        salt, digest = manager.hash_panel_password("Pwd12345")
+        manager.write_json(auth_file, {
+            "username": "admin",
+            "password_hash": digest,
+            "password_salt": salt,
+            "password": "",
+        })
+        cfg = manager.load_ui_config()
+        secret_path = cfg.get("secret_path")
+        self.assertTrue(re.fullmatch(r"[A-Za-z0-9]{12}", secret_path or ""))
+        self.assertNotEqual("EJsW2EeBo9lY", secret_path)
+
+    # ---- (b) panel_name 转义 ----
+    def test_panel_name_is_html_escaped(self) -> None:
+        evil = '<script>alert(1)</script><img src=x onerror=alert(2)>'
+        with mock.patch.object(manager, "load_ui_config", return_value={"panel_name": evil}):
+            out = manager.render_panel_html().decode("utf-8")
+        self.assertNotIn(evil, out)
+        self.assertIn("&lt;script&gt;", out)
+        self.assertNotIn("{{PANEL_NAME}}", out)
+
+    def test_panel_name_normal_renders(self) -> None:
+        with mock.patch.object(manager, "load_ui_config", return_value={"panel_name": "AimiliVPN"}):
+            out = manager.render_panel_html().decode("utf-8")
+        self.assertIn("<title>AimiliVPN 节点管理系统</title>", out)
+
+    # ---- (d) 登录限流 ----
+    def test_login_rate_limit_blocks_after_five_failures(self) -> None:
+        ip = "203.0.113.99"
+        self.assertFalse(manager.is_login_blocked(ip))
+        for _ in range(4):
+            manager.record_login_failure(ip)
+        self.assertFalse(manager.is_login_blocked(ip))
+        manager.record_login_failure(ip)
+        self.assertTrue(manager.is_login_blocked(ip))
+        manager.clear_login_failures(ip)
+        self.assertFalse(manager.is_login_blocked(ip))
+
+    def test_login_rate_limit_is_per_ip(self) -> None:
+        for _ in range(5):
+            manager.record_login_failure("203.0.113.1")
+        self.assertTrue(manager.is_login_blocked("203.0.113.1"))
+        self.assertFalse(manager.is_login_blocked("203.0.113.2"))
+
+
 if __name__ == "__main__":
     unittest.main()

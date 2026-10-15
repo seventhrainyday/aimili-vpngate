@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import html
 import json
 import os
 import queue
@@ -366,15 +367,35 @@ def load_ui_config() -> dict[str, Any]:
                 for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "discovery_countries"]:
                     if key not in data:
                         updated = True
+                # (c) secret_path：文件里缺失/为空时随机生成（install.sh 新安装会写随机值；这里兜底手动/docker 启动）。
+                # 已有值（即使是旧的默认常量）一律不动，避免静默变更用户书签 URL。
+                if not data.get("secret_path"):
+                    config["secret_path"] = generate_random_secret_path()
+                    updated = True
             except Exception:
                 pass
-        
+
+        if not auth_file.exists() and config.get("secret_path") == "EJsW2EeBo9lY":
+            # (c) 全新启动（无文件）：不用写死的默认常量，直接随机
+            config["secret_path"] = generate_random_secret_path()
+
         if not config.get("username"):
             config["username"] = generate_random_username()
             updated = True
-            
-        if not config.get("password"):
-            config["password"] = generate_random_password()
+
+        # (a) 面板密码只存哈希。老版本明文 password 在此自动迁移为哈希并清掉明文；
+        # 全新安装直接生成随机密码的哈希，明文不落盘。
+        if config.get("password") and not config.get("password_hash"):
+            _salt_hex, _pwd_hash = hash_panel_password(str(config["password"]))
+            config["password_salt"] = _salt_hex
+            config["password_hash"] = _pwd_hash
+            config["password"] = ""
+            updated = True
+        elif not config.get("password_hash"):
+            _salt_hex, _pwd_hash = hash_panel_password(generate_random_password())
+            config["password_salt"] = _salt_hex
+            config["password_hash"] = _pwd_hash
+            config["password"] = ""
             updated = True
 
         normalized_port = bounded_int(config.get("port"), UI_PORT, 1, 65535)
@@ -430,9 +451,84 @@ try:
 except Exception:
     pass
 
-def get_session_token(password: str, username: str = "admin") -> str:
-    salt = "aimilivpn_secure_salt_2026"
-    return hashlib.sha256((username + ":" + password + salt).encode("utf-8")).hexdigest()
+# ---------------------------------------------------------------------------
+# 安全加固（2026-10-15）：面板密码哈希存储 / 登录限流 / secret_path 随机
+# ---------------------------------------------------------------------------
+_PBKDF2_ITERATIONS = 200_000
+
+
+def hash_panel_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
+    """PBKDF2-HMAC-SHA256 哈希面板密码。返回 (salt_hex, hash_hex)。"""
+    if salt_hex is None:
+        salt_hex = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), _PBKDF2_ITERATIONS
+    )
+    return salt_hex, digest.hex()
+
+
+def verify_panel_password(input_password: str, ui_cfg: dict) -> bool:
+    """校验面板密码：优先哈希，其次兼容老版本明文。"""
+    password_hash = ui_cfg.get("password_hash")
+    salt_hex = ui_cfg.get("password_salt")
+    if password_hash and salt_hex:
+        try:
+            _, digest = hash_panel_password(str(input_password), str(salt_hex))
+        except Exception:
+            return False
+        return secrets.compare_digest(digest, str(password_hash))
+    legacy = ui_cfg.get("password", "")
+    return bool(legacy) and secrets.compare_digest(str(input_password), str(legacy))
+
+
+def panel_password_is_set(ui_cfg: dict) -> bool:
+    return bool(ui_cfg.get("password_hash") or ui_cfg.get("password"))
+
+
+def generate_random_secret_path() -> str:
+    import string
+    chars = string.ascii_letters + string.digits
+    return "".join(secrets.choice(chars) for _ in range(12))
+
+
+# ---- 登录限流：同一 IP 连续失败 5 次后锁定 15 分钟 ----
+_LOGIN_MAX_FAILURES = 5
+_LOGIN_BLOCK_SECONDS = 15 * 60
+_login_failures: dict[str, list[float]] = {}
+
+
+def _prune_login_failures(ip: str) -> list[float]:
+    now = time.time()
+    recent = [t for t in _login_failures.get(ip, []) if now - t < _LOGIN_BLOCK_SECONDS]
+    if recent:
+        _login_failures[ip] = recent
+    else:
+        _login_failures.pop(ip, None)
+    return recent
+
+
+def is_login_blocked(ip: str) -> bool:
+    with lock:
+        return len(_prune_login_failures(ip)) >= _LOGIN_MAX_FAILURES
+
+
+def record_login_failure(ip: str) -> None:
+    with lock:
+        recent = _prune_login_failures(ip)
+        recent.append(time.time())
+        # _prune 在列表为空时会摘掉 key，这里重新挂回去，保证 append 生效
+        _login_failures[ip] = recent
+
+
+def clear_login_failures(ip: str) -> None:
+    with lock:
+        _login_failures.pop(ip, None)
+
+
+def render_panel_html() -> bytes:
+    """渲染面板首页 HTML。(b) panel_name 做 HTML 转义，防存储型 XSS。"""
+    _panel = str(load_ui_config().get("panel_name") or "AimiliVPN")
+    return INDEX_HTML.replace("{{PANEL_NAME}}", html.escape(_panel)).encode("utf-8")
 
 _last_cleanup_time = 0.0
 
@@ -548,7 +644,7 @@ def get_state() -> dict[str, Any]:
     state["username"] = ui_cfg.get("username", "admin")
     state["port"] = ui_cfg.get("port", 8787)
     state["secret_path"] = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
-    state["password_set"] = bool(ui_cfg.get("password"))
+    state["password_set"] = panel_password_is_set(ui_cfg)
     state["proxy_port"] = ui_cfg.get("proxy_port", 7928)
     state["proxy_bind_host"] = ui_cfg.get("proxy_bind_host", "0.0.0.0")
     state["proxy_user"] = ui_cfg.get("proxy_user", "")
@@ -9309,8 +9405,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def is_authorized(self) -> bool:
         ui_cfg = load_ui_config()
-        pwd = ui_cfg.get("password")
-        if not pwd:
+        if not panel_password_is_set(ui_cfg):
             print("[Auth] 管理后台密码为空，已拒绝访问。请检查 ui_auth.json。", flush=True)
             return False
         
@@ -9409,9 +9504,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
                 
         if effective_path in ("/", "/index.html"):
-            _panel = str(load_ui_config().get("panel_name") or "AimiliVPN")
-            _html = INDEX_HTML.replace("{{PANEL_NAME}}", _panel)
-            self.send_bytes(_html.encode("utf-8"), "text/html; charset=utf-8")
+            self.send_bytes(render_panel_html(), "text/html; charset=utf-8")
         elif effective_path == "/api/nodes":
             global last_active_ping_time, last_active_latency, active_openvpn_node_id
             nodes = read_nodes()
@@ -9673,13 +9766,19 @@ class Handler(BaseHTTPRequestHandler):
                 input_pwd = str(payload.get("password") or "")
                 input_uname = str(payload.get("username") or "")
                 
+                # (d) 登录限流：同一 IP 连续失败 5 次后锁定 15 分钟
+                client_ip = self.client_address[0] if self.client_address else "unknown"
+                if is_login_blocked(client_ip):
+                    self.send_json({"ok": False, "error": "登录尝试次数过多，请 15 分钟后再试"}, HTTPStatus.TOO_MANY_REQUESTS)
+                    return
+
                 ui_cfg = load_ui_config()
-                expected_pwd = ui_cfg.get("password", "")
                 expected_uname = ui_cfg.get("username", "admin")
-                
-                password_matches = bool(expected_pwd) and secrets.compare_digest(input_pwd, str(expected_pwd))
+
+                password_matches = verify_panel_password(input_pwd, ui_cfg)
                 username_matches = secrets.compare_digest(input_uname, str(expected_uname))
                 if password_matches and username_matches:
+                    clear_login_failures(client_ip)
                     token = uuid.uuid4().hex
                     purge_expired_sessions()
                     with lock:
@@ -9695,6 +9794,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(body)
                 else:
+                    record_login_failure(client_ip)
                     self.send_json({"ok": False, "error": "用户名或密码不正确，请重新输入"}, HTTPStatus.FORBIDDEN)
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -9741,7 +9841,7 @@ class Handler(BaseHTTPRequestHandler):
                 new_suffix = str(payload.get("secret_path") or "").strip()
                 
                 ui_cfg = load_ui_config()
-                if not new_username or (not new_password and not ui_cfg.get("password")):
+                if not new_username or (not new_password and not panel_password_is_set(ui_cfg)):
                     self.send_json({"ok": False, "error": "用户名不能为空；首次设置时密码不能为空"}, HTTPStatus.BAD_REQUEST)
                     return
                 
@@ -9758,7 +9858,6 @@ class Handler(BaseHTTPRequestHandler):
                     return
 
                 expected_username = ui_cfg.get("username", "")
-                expected_password = ui_cfg.get("password", "")
                 expected_port = ui_cfg.get("port", 8787)
                 expected_suffix = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
 
@@ -9768,12 +9867,16 @@ class Handler(BaseHTTPRequestHandler):
 
                 ui_cfg["username"] = new_username
                 if new_password:
-                    ui_cfg["password"] = new_password
+                    # (a) 只存哈希，明文不落盘
+                    _salt_hex, _pwd_hash = hash_panel_password(new_password)
+                    ui_cfg["password_salt"] = _salt_hex
+                    ui_cfg["password_hash"] = _pwd_hash
+                    ui_cfg["password"] = ""
                 ui_cfg["port"] = new_port_int
                 ui_cfg["secret_path"] = new_suffix
                 
                 auth_file = DATA_DIR / "ui_auth.json"
-                reauth_required = new_username != expected_username or (new_password and new_password != expected_password)
+                reauth_required = new_username != expected_username or bool(new_password)
                 with lock:
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     write_json(auth_file, ui_cfg)
