@@ -1254,6 +1254,25 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertTrue(manager.is_login_blocked("203.0.113.1"))
         self.assertFalse(manager.is_login_blocked("203.0.113.2"))
 
+    # ---- 代理默认监听 127.0.0.1（2026-10-15）----
+    def test_proxy_bind_host_defaults_to_loopback(self) -> None:
+        cfg = manager.load_ui_config()
+        self.assertEqual("127.0.0.1", cfg.get("proxy_bind_host"))
+
+    def test_existing_bind_host_value_is_preserved(self) -> None:
+        # 已有配置不静默迁移：存着 0.0.0.0 就保持，由用户在面板里改
+        auth_file = manager.DATA_DIR / "ui_auth.json"
+        salt, digest = manager.hash_panel_password("Pwd12345")
+        manager.write_json(auth_file, {
+            "username": "admin",
+            "password_hash": digest,
+            "password_salt": salt,
+            "password": "",
+            "proxy_bind_host": "0.0.0.0",
+        })
+        cfg = manager.load_ui_config()
+        self.assertEqual("0.0.0.0", cfg.get("proxy_bind_host"))
+
 
 if __name__ == "__main__":
     unittest.main()

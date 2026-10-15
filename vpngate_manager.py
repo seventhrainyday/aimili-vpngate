@@ -350,7 +350,7 @@ def load_ui_config() -> dict[str, Any]:
             "auto_delete_days": 7,
             "panel_name": "AimiliVPN",
             "process_name": "",
-            "proxy_bind_host": "0.0.0.0",
+            "proxy_bind_host": "127.0.0.1",
             "proxy_user": "",
             "proxy_password": "",
         }
@@ -622,7 +622,7 @@ def get_state() -> dict[str, Any]:
     state.setdefault("target_valid_nodes", TARGET_VALID_NODES)
     state.setdefault("fetch_interval_seconds", FETCH_INTERVAL_SECONDS)
     state.setdefault("check_interval_seconds", CHECK_INTERVAL_SECONDS)
-    _ui_bind = str(load_ui_config().get("proxy_bind_host") or "0.0.0.0")
+    _ui_bind = str(load_ui_config().get("proxy_bind_host") or "127.0.0.1")
     _proxy_display = f"[{_ui_bind}]" if ":" in _ui_bind else _ui_bind
     state["local_proxy"] = f"http://{_proxy_display}:{LOCAL_PROXY_PORT}"
     state.setdefault("last_fetch_status", "not_started")
@@ -646,7 +646,7 @@ def get_state() -> dict[str, Any]:
     state["secret_path"] = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
     state["password_set"] = panel_password_is_set(ui_cfg)
     state["proxy_port"] = ui_cfg.get("proxy_port", 7928)
-    state["proxy_bind_host"] = ui_cfg.get("proxy_bind_host", "0.0.0.0")
+    state["proxy_bind_host"] = ui_cfg.get("proxy_bind_host", "127.0.0.1")
     state["proxy_user"] = ui_cfg.get("proxy_user", "")
     state["proxy_auth_enabled"] = bool(ui_cfg.get("proxy_user") and ui_cfg.get("proxy_password"))
     state["notify_enabled"] = bool(ui_cfg.get("notify_enabled"))
@@ -2780,7 +2780,7 @@ def start_extra_exit(exit_id: str) -> str:
 
     # 启动代理（绑定到该出口的 tun 设备）
     ui_cfg = load_ui_config()
-    bind_host = str(ui_cfg.get("proxy_bind_host") or "0.0.0.0")
+    bind_host = str(ui_cfg.get("proxy_bind_host") or "127.0.0.1")
     proxy_thread = threading.Thread(
         target=proxy_server.start_proxy_server,
         args=(bind_host, port, tun_dev),
@@ -2904,7 +2904,7 @@ def test_proxy_speed(timeout: int = 30) -> dict:
     test_url = "http://speedtest.tele2.net/10MB.zip"
     try:
         _cfg = load_ui_config()
-        _bh = str(_cfg.get("proxy_bind_host") or "0.0.0.0")
+        _bh = str(_cfg.get("proxy_bind_host") or "127.0.0.1")
         _port = int(_cfg.get("proxy_port") or 7928)
         _host = "127.0.0.1" if _bh == "0.0.0.0" else _bh
         _start = _t.time()
@@ -8334,7 +8334,7 @@ function openNetworkModal() {
   
   if (state) {
     $("net_proxy_port").value = state.proxy_port || 7928;
-    $("net_proxy_bind").value = state.proxy_bind_host || "0.0.0.0";
+    $("net_proxy_bind").value = state.proxy_bind_host || "127.0.0.1";
     $("net_proxy_user").value = state.proxy_user || "";
     $("net_proxy_password").value = "";
     if ($("net_notify_enabled")) $("net_notify_enabled").checked = !!state.notify_enabled;
@@ -10012,7 +10012,7 @@ class Handler(BaseHTTPRequestHandler):
                 # 用配置的 bind host
                 try:
                     _cfg = load_ui_config()
-                    _bh = str(_cfg.get("proxy_bind_host") or "0.0.0.0")
+                    _bh = str(_cfg.get("proxy_bind_host") or "127.0.0.1")
                     if _bh == "0.0.0.0":
                         proxy_hosts = ["127.0.0.1"]
                     else:
@@ -10346,7 +10346,7 @@ class Handler(BaseHTTPRequestHandler):
                 ui_cfg["proxy_port"] = new_proxy_port_int
                 ui_cfg["check_interval_minutes"] = check_interval_minutes_int
                 ui_cfg["probe_workers"] = probe_workers_int
-                ui_cfg["proxy_bind_host"] = proxy_bind_host or "0.0.0.0"
+                ui_cfg["proxy_bind_host"] = proxy_bind_host or "127.0.0.1"
                 ui_cfg["proxy_user"] = proxy_user
                 ui_cfg["proxy_password"] = proxy_password
                 ui_cfg["notify_enabled"] = notify_enabled
@@ -10390,7 +10390,7 @@ class Handler(BaseHTTPRequestHandler):
                 if routing_mode == "fixed_ip":
                     ui_cfg["fixed_node_id"] = fixed_node_id
                 
-                old_bind_host = load_ui_config().get("proxy_bind_host", "0.0.0.0")
+                old_bind_host = load_ui_config().get("proxy_bind_host", "127.0.0.1")
                 auth_file = DATA_DIR / "ui_auth.json"
                 with lock:
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
@@ -10403,7 +10403,7 @@ class Handler(BaseHTTPRequestHandler):
                     proxy_server.set_proxy_credentials(None, None)
 
                 policy_message = enforce_active_node_allowed_by_routing(ui_cfg, "路由设置已更新")
-                bind_changed = (proxy_bind_host or "0.0.0.0") != old_bind_host
+                bind_changed = (proxy_bind_host or "127.0.0.1") != old_bind_host
                 if bind_changed:
                     policy_message = (policy_message + " " if policy_message else "") + "代理绑定地址已变更，需重启服务生效（ml restart）。" 
                 
@@ -10746,7 +10746,7 @@ def main() -> None:
         },
     )
     _ui_cfg_startup = load_ui_config()
-    _bind_host = str(_ui_cfg_startup.get("proxy_bind_host") or "0.0.0.0").strip() or "0.0.0.0"
+    _bind_host = str(_ui_cfg_startup.get("proxy_bind_host") or "127.0.0.1").strip() or "127.0.0.1"
     _p_user = str(_ui_cfg_startup.get("proxy_user") or "").strip()
     _p_pass = str(_ui_cfg_startup.get("proxy_password") or "")
     if _p_user and _p_pass:
